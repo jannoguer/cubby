@@ -1,0 +1,19 @@
+services:
+  cubby:
+    build: .
+    container_name: cubby
+    hostname: cubby
+    init: true
+    ports:
+      - "2222:22"
+    volumes:
+      - ./config:/config
+      - ./shared:/shared
+      - ./keys:/pubkeys:ro
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
+      interval: 30s
+      start_period: 10s
+    restart: unless-stopped

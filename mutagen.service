@@ -1,0 +1,12 @@
+[Unit]
+Description=Mutagen sync daemon
+Documentation=https://mutagen.io
+
+[Service]
+# If mutagen isn't in your login PATH, change ExecStart to its absolute path.
+ExecStart=/bin/sh -lc 'exec mutagen daemon run'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
