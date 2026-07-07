@@ -87,9 +87,10 @@ function Get-CachePath {
 }
 
 # Service accounts (e.g. LocalSystem) lack per-user PATH entries, so when
-# the PATH lookup fails, probe each profile's install location. The fallback
-# also returns that profile's .mutagen data directory; without it the CLI
-# would talk to the service account's own (empty) daemon.
+# the PATH lookup fails, probe each profile's install locations (official
+# installer and scoop). The fallback also returns that profile's .mutagen
+# data directory; without it the CLI would talk to the service account's
+# own (empty) daemon.
 function Resolve-MutagenCli {
     $cmd = Get-Command mutagen -ErrorAction SilentlyContinue
     if ($null -ne $cmd) {
@@ -98,9 +99,11 @@ function Resolve-MutagenCli {
     $usersRoot = Join-Path "$env:SystemDrive\" 'Users'
     if (Test-Path -LiteralPath $usersRoot) {
         foreach ($userDir in Get-ChildItem -LiteralPath $usersRoot -Directory -ErrorAction SilentlyContinue) {
-            $exe = Join-Path $userDir.FullName 'AppData\Local\Programs\mutagen\mutagen.exe'
-            if (Test-Path -LiteralPath $exe) {
-                return @{ Path = $exe; DataDir = Join-Path $userDir.FullName '.mutagen' }
+            foreach ($rel in @('AppData\Local\Programs\mutagen\mutagen.exe', 'scoop\shims\mutagen.exe')) {
+                $exe = Join-Path $userDir.FullName $rel
+                if (Test-Path -LiteralPath $exe) {
+                    return @{ Path = $exe; DataDir = Join-Path $userDir.FullName '.mutagen' }
+                }
             }
         }
     }
@@ -116,9 +119,16 @@ function Get-SessionState {
         if ($DataDir -and -not $env:MUTAGEN_DATA_DIRECTORY) {
             $env:MUTAGEN_DATA_DIRECTORY = $DataDir
         }
-        $output = & $Exe sync list --template '{{ json . }}' $Name 2>&1
+        # Stderr is collected separately: a warning printed alongside a
+        # successful listing must not corrupt the JSON on stdout.
+        $stdout = @(); $stderr = @()
+        & $Exe sync list --template '{{ json . }}' $Name 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $stderr += "$_" }
+            else { $stdout += "$_" }
+        }
         [pscustomobject]@{
-            Lines    = @($output | ForEach-Object { "$_" })
+            Lines    = $stdout
+            ErrLines = $stderr
             ExitCode = $LASTEXITCODE
         }
     } -ArgumentList $SessionName, $MutagenCli.Path, $MutagenCli.DataDir
@@ -139,8 +149,10 @@ function Get-SessionState {
     }
 
     $text = (@($completed.Lines) | ForEach-Object { "$_" }) -join "`n"
+    $errText = (@($completed.ErrLines) | ForEach-Object { "$_" }) -join '; '
     if ($completed.ExitCode -ne 0) {
-        return @{ Ok = $false; Error = "mutagen exited with code $($completed.ExitCode): $text" }
+        $detail = (@($errText, $text) | Where-Object { $_ }) -join ' | '
+        return @{ Ok = $false; Error = "mutagen exited with code $($completed.ExitCode): $detail" }
     }
 
     try {
@@ -173,22 +185,34 @@ function ConvertTo-SingleLine([string]$Text) {
 
 # Renames the staged file onto the destination. File.Replace swaps in place
 # when the destination exists, so consumers never observe it missing.
+# Transient locks (a reader or scanner holding the destination open without
+# share-delete) fail both Replace and Move-Item, so retry briefly.
 function Move-IntoPlace([string]$Stage, [string]$Destination) {
-    if (Test-Path -LiteralPath $Destination) {
+    $attempts = 3
+    for ($i = 1; $i -le $attempts; $i++) {
         try {
-            # NullString: PowerShell would coerce $null to "" for the
-            # [string] backup parameter, which File.Replace rejects.
-            [System.IO.File]::Replace($Stage, $Destination, [NullString]::Value)
+            if (Test-Path -LiteralPath $Destination) {
+                try {
+                    # NullString: PowerShell would coerce $null to "" for the
+                    # [string] backup parameter, which File.Replace rejects.
+                    [System.IO.File]::Replace($Stage, $Destination, [NullString]::Value)
+                    return
+                }
+                catch [System.PlatformNotSupportedException] {
+                    # Filesystem without replace support; fall through to Move-Item.
+                }
+                catch [System.IO.IOException] {
+                    # Destination busy; Move-Item below decides, retried on failure.
+                }
+            }
+            Move-Item -LiteralPath $Stage -Destination $Destination -Force
             return
         }
-        catch [System.PlatformNotSupportedException] {
-            # Filesystem without replace support; fall through to Move-Item.
-        }
         catch [System.IO.IOException] {
-            # Same fallback; a truly locked destination fails Move-Item too.
+            if ($i -eq $attempts) { throw }
+            Start-Sleep -Milliseconds 150
         }
     }
-    Move-Item -LiteralPath $Stage -Destination $Destination -Force
 }
 
 # Stages the content, swaps it onto status.ok or status.err, and only then
@@ -226,93 +250,99 @@ if ($null -eq $MutagenCli) {
 
 $now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 
-# Overlapping scheduled runs would contend for the same staging file.
+# Overlapping scheduled runs would contend for the same staging file. exit
+# inside try still runs the finally block, so the mutex is always released;
+# the AbandonedMutexException catch covers holders that were hard-killed.
 $mutex = New-Object System.Threading.Mutex($false, "cubby-watch-status-$(Get-SessionSlug)")
 $acquired = $false
 try {
-    $acquired = $mutex.WaitOne(0)
-}
-catch [System.Threading.AbandonedMutexException] {
-    # A previous holder exited without releasing; the mutex is ours now.
-    $acquired = $true
-}
-if (-not $acquired) {
-    Write-Warning "[$now] another instance is already running for '$SessionName'"
-    exit 1
-}
-
-$cachePath = Get-CachePath
-$result = Get-SessionState
-
-if (-not $result.Ok) {
-    # Daemon or session unreachable: fall back to the cached directory.
-    Write-Warning "[$now] $($result.Error)"
-    $dir = $null
-    if (Test-Path -LiteralPath $cachePath) {
-        $dir = ([System.IO.File]::ReadAllText($cachePath)).Trim()
+    try {
+        $acquired = $mutex.WaitOne(0)
     }
-    if ($dir -and (Test-Path -LiteralPath $dir)) {
-        $content = @(
-            "checkedAt=$now"
-            "session=$(ConvertTo-SingleLine $SessionName)"
-            "healthy=false"
-            "status=unknown"
-            "lastError=$(ConvertTo-SingleLine $result.Error)"
-        ) -join "`n"
-        Write-StatusMarker -Dir $dir -Healthy $false -Content $content
-        Write-Host "[$now] status.err written to $dir"
+    catch [System.Threading.AbandonedMutexException] {
+        # A previous holder died without releasing; the mutex is ours now.
+        $acquired = $true
     }
-    else {
-        Write-Warning "[$now] synced directory unknown; no marker written"
+    if (-not $acquired) {
+        Write-Warning "[$now] another instance is already running for '$SessionName'"
+        exit 1
     }
-    exit 1
+
+    $cachePath = Get-CachePath
+    $result = Get-SessionState
+
+    if (-not $result.Ok) {
+        # Daemon or session unreachable: fall back to the cached directory.
+        Write-Warning "[$now] $($result.Error)"
+        $dir = $null
+        if (Test-Path -LiteralPath $cachePath) {
+            $dir = ([System.IO.File]::ReadAllText($cachePath)).Trim()
+        }
+        if ($dir -and (Test-Path -LiteralPath $dir)) {
+            $content = @(
+                "checkedAt=$now"
+                "session=$(ConvertTo-SingleLine $SessionName)"
+                "healthy=false"
+                "status=unknown"
+                "lastError=$(ConvertTo-SingleLine $result.Error)"
+            ) -join "`n"
+            Write-StatusMarker -Dir $dir -Healthy $false -Content $content
+            Write-Host "[$now] status.err written to $dir"
+        }
+        else {
+            Write-Warning "[$now] synced directory unknown; no marker written"
+        }
+        exit 1
+    }
+
+    $session = $result.Session
+    $dir = Resolve-MappedDir $session
+    if ($null -eq $dir) {
+        Write-Warning "[$now] session '$SessionName' has no local endpoint; nothing to write"
+        exit 1
+    }
+    if (-not (Test-Path -LiteralPath $dir)) {
+        Write-Warning "[$now] mapped directory '$dir' does not exist"
+        exit 1
+    }
+    # The cache is best-effort; a failed update must not block the marker write.
+    try {
+        [System.IO.File]::WriteAllText($cachePath, $dir)
+    }
+    catch {
+        Write-Warning "[$now] could not update cache '$cachePath': $($_.Exception.Message)"
+    }
+
+    $status = "$($session.status)"
+    $lastError = ConvertTo-SingleLine "$($session.lastError)"
+    $paused = ($session.paused -eq $true)
+    $alphaConnected = ($session.alpha.connected -eq $true)
+    $betaConnected = ($session.beta.connected -eq $true)
+    $conflictCount = @($session.conflicts | Where-Object { $null -ne $_ }).Count
+
+    $healthy = ($OkStatuses -contains $status) -and
+    (-not $paused) -and
+    ($lastError -eq '') -and
+    $alphaConnected -and
+    $betaConnected
+
+    $content = @(
+        "checkedAt=$now"
+        "session=$(ConvertTo-SingleLine $SessionName)"
+        "healthy=$(if ($healthy) { 'true' } else { 'false' })"
+        "status=$status"
+        "paused=$(if ($paused) { 'true' } else { 'false' })"
+        "alphaConnected=$(if ($alphaConnected) { 'true' } else { 'false' })"
+        "betaConnected=$(if ($betaConnected) { 'true' } else { 'false' })"
+        "conflicts=$conflictCount"
+        "lastError=$lastError"
+    ) -join "`n"
+
+    Write-StatusMarker -Dir $dir -Healthy $healthy -Content $content
+    Write-Host "[$now] $(if ($healthy) { 'status.ok' } else { 'status.err' }) status=$status"
+    exit 0
 }
-
-$session = $result.Session
-$dir = Resolve-MappedDir $session
-if ($null -eq $dir) {
-    Write-Warning "[$now] session '$SessionName' has no local endpoint; nothing to write"
-    exit 1
+finally {
+    if ($acquired) { $mutex.ReleaseMutex() }
+    $mutex.Dispose()
 }
-if (-not (Test-Path -LiteralPath $dir)) {
-    Write-Warning "[$now] mapped directory '$dir' does not exist"
-    exit 1
-}
-# The cache is best-effort; a failed update must not block the marker write.
-try {
-    [System.IO.File]::WriteAllText($cachePath, $dir)
-}
-catch {
-    Write-Warning "[$now] could not update cache '$cachePath': $($_.Exception.Message)"
-}
-
-$status = "$($session.status)"
-$lastError = ConvertTo-SingleLine "$($session.lastError)"
-$paused = ($session.paused -eq $true)
-$alphaConnected = ($session.alpha.connected -eq $true)
-$betaConnected = ($session.beta.connected -eq $true)
-$conflictCount = @($session.conflicts | Where-Object { $null -ne $_ }).Count
-
-$healthy = ($OkStatuses -contains $status) -and
-(-not $paused) -and
-($lastError -eq '') -and
-$alphaConnected -and
-$betaConnected
-
-$content = @(
-    "checkedAt=$now"
-    "session=$(ConvertTo-SingleLine $SessionName)"
-    "healthy=$(if ($healthy) { 'true' } else { 'false' })"
-    "status=$status"
-    "paused=$(if ($paused) { 'true' } else { 'false' })"
-    "alphaConnected=$(if ($alphaConnected) { 'true' } else { 'false' })"
-    "betaConnected=$(if ($betaConnected) { 'true' } else { 'false' })"
-    "conflicts=$conflictCount"
-    "lastError=$lastError"
-) -join "`n"
-
-Write-StatusMarker -Dir $dir -Healthy $healthy -Content $content
-Write-Host "[$now] $(if ($healthy) { 'status.ok' } else { 'status.err' }) status=$status"
-exit 0
-
-

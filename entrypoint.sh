@@ -15,6 +15,9 @@ found=0
 for f in /pubkeys/*.pub; do
     [ -e "$f" ] || continue
     cat "$f" >> "$HOME_DIR/.ssh/authorized_keys"
+    # A key file without a trailing newline would glue the next key onto the
+    # same line, invalidating both; sshd ignores the blank lines this adds.
+    echo >> "$HOME_DIR/.ssh/authorized_keys"
     found=1
 done
 
@@ -30,6 +33,9 @@ chmod 755 /config
 chmod 700 "$HOME_DIR/.ssh"
 chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 chown -R syncuser:syncuser "$HOME_DIR"
+# Only the root of /shared is checked, so a restart skips a recursive chown
+# of a possibly large tree. Files placed inside from the host with another
+# owner are not fixed up; chown them to 1000:1000 manually.
 [ "$(stat -c %u /shared)" = "1000" ] || chown -R syncuser:syncuser /shared
 
 exec /usr/sbin/sshd -D -e
