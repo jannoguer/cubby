@@ -2,6 +2,8 @@
 
 A barebones, self-hosted file sync server utilizing a minimal Alpine container running only `sshd` with key-only access. Syncing is handled by [Mutagen](https://mutagen.io) (built and tested against v0.18.1) over SSH.
 
+For the Android client, see [Android Setup (Termux)](docs/ANDROID_SETUP.md).
+
 ## 1. Installation & Server Setup
 
 ### Client
@@ -15,17 +17,22 @@ or grab a prebuilt binary from the [releases page](https://github.com/mutagen-io
 
 **Generate SSH Key:**
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/cubby
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/cubby
 ```
 
 ### Server
 
-**Initialize:** Clone this repo in your target directory and ensure TCP port `2222` is open on your server/VPS provider. Create the directories, add your key, and start the container:
+**Initialize:** Clone this repo in your target directory and ensure TCP port `2222` is open on your server/VPS provider. Create the directories, add your key, stage the client helpers, and start the container:
 ```bash
 mkdir -p config shared keys
 echo "PASTE_YOUR_CLIENT_PUB_KEY" > keys/laptop.pub
+mkdir -p shared/.cubby_client
+cp -rf client/. shared/.cubby_client/
 docker compose up --build -d
 ```
+
+> [!NOTE]
+> The copy into `shared/.cubby_client` distributes the client helpers (watch scripts, systemd unit) to every device on its first sync; later sections reference them from there. Skipping it only costs you those helpers.
 
 > [!NOTE]
 > `keys/` holds one `.pub` file per client (e.g., `laptop.pub`, `desktop-3.pub`); other files are ignored. Run `docker compose restart` after adding or deleting keys.
@@ -62,10 +69,10 @@ mutagen sync create --name=cubby --ignore=/.cubby /path/to/local/folder cubby:/s
 * **Windows/macOS:** Run `mutagen daemon register`.
 * **Linux:** `daemon register` is [not supported](https://mutagen.io/documentation/introduction/daemon/#system-management).
     
-    Use the provided unit instead:
+    Use the provided unit instead. It arrives with the first sync (staged into `shared/.cubby_client` during server setup), so wait for the session to settle, then:
     ```bash
     mkdir -p ~/.config/systemd/user
-    cp mutagen.service ~/.config/systemd/user/
+    cp .cubby_client/linux/mutagen.service ~/.config/systemd/user/
     systemctl --user enable --now mutagen.service
     ```
     *(Note: Run `loginctl enable-linger $USER` on headless machines so the daemon starts at boot)*.
@@ -81,18 +88,8 @@ Run `mutagen sync list` to check sessions status and conflicts.
 
 ## 4. Health and Conflict Markers (OPTIONAL)
 
-The `client/` folder ships with schedulable probe scripts (check their header comments for cron/Task Scheduler examples and exit codes):
-
-* **`watch-status.ps1 <session>`:** Writes `.cubby/status.ok` or `.cubby/status.err` with machine-readable session health.
-
-* **`watch-conflicts.ps1 <session>`:** Maintains `.cubby/conflicts.json` while conflicts exist, removing it when clean.
-
-* **`run-hidden.vbs <command>`:** A Windows helper (`wscript` GUI-subsystem app) that runs arguments with no visible window. This keeps Task Scheduler from flashing a console during an interactive logon and returns the exit code.
-
-> [!TIP]
-> To sync these scripts across all clients automatically, place them in a hidden folder:
+Every client already has schedulable probe scripts in `.cubby_client/` inside the sync root (staged there during server setup). They write machine-readable health and conflict markers under `.cubby/`; check their header comments for usage, cron/Task Scheduler examples, and exit codes. Keep `watch-common.ps1` next to the scripts; they dot-source it.
 
 ```bash
-mkdir -p shared/.cubby_scripts
-cp -rf client/. shared/.cubby_scripts/
+pwsh -NoProfile -File .cubby_client/watch-status.ps1 cubby
 ```
