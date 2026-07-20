@@ -101,7 +101,7 @@ Shared storage makes the files visible to every Android app, but is case-insensi
 
 ```bash
 termux-chroot mutagen daemon run > /dev/null 2>&1 &
-termux-chroot mutagen sync create --name=cubby --ignore=/.cubby ~/storage/shared/Cubby cubby:/shared
+termux-chroot mutagen sync create --name=Cubby --ignore=/.cubby ~/storage/shared/Cubby cubby:/shared
 termux-chroot mutagen sync list
 ```
 

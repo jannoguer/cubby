@@ -1,4 +1,4 @@
-# cubby
+# Cubby
 
 A barebones, self-hosted file sync server utilizing a minimal Alpine container running only `sshd` with key-only access. Syncing is handled by [Mutagen](https://mutagen.io) (built and tested against v0.18.1) over SSH.
 
@@ -37,10 +37,7 @@ docker compose up --build -d
 > [!NOTE]
 > `keys/` holds one `.pub` file per client (e.g., `laptop.pub`, `desktop-3.pub`); other files are ignored. Run `docker compose restart` after adding or deleting keys.
 
-> [!NOTE]
-> Synced files live in `./shared` (mounted at `/shared`).
-
-> [!NOTE]
+> [!IMPORTANT]
 > `./config` holds the SSH host key and the sync user's home, **back this up**.
 
 
@@ -59,7 +56,7 @@ Host cubby
 
 **Create Sync Session:** Start syncing with the following command:
 ```bash
-mutagen sync create --name=cubby --ignore=/.cubby /path/to/local/folder cubby:/shared
+mutagen sync create --name=Cubby --ignore=/.cubby /path/to/local/folder cubby:/shared
 ```
 
 > [!NOTE]
@@ -91,5 +88,5 @@ Run `mutagen sync list` to check sessions status and conflicts.
 Every client already has schedulable probe scripts in `.cubby_client/` inside the sync root (staged there during server setup). They write machine-readable health and conflict markers under `.cubby/`; check their header comments for usage, cron/Task Scheduler examples, and exit codes. Keep `watch-common.ps1` next to the scripts; they dot-source it.
 
 ```bash
-pwsh -NoProfile -File .cubby_client/watch-status.ps1 cubby
+pwsh -NoProfile -File .cubby_client/watch-status.ps1 Cubby
 ```

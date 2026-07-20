@@ -31,7 +31,7 @@ Name (or identifier) of the Mutagen sync session.
 Maximum time to wait for the Mutagen daemon to answer. Defaults to 30.
 
 .EXAMPLE
-pwsh -NoProfile -File watch-status.ps1 cubby
+pwsh -NoProfile -File watch-status.ps1 Cubby
 
 .NOTES
 Exit codes: 0 = session queried and marker written; 1 = anything else
@@ -39,11 +39,11 @@ Exit codes: 0 = session queried and marker written; 1 = anything else
 previous successful run).
 
 Scheduling examples:
-  cron:           * * * * * pwsh -NoProfile -File /path/to/watch-status.ps1 cubby
-  Task Scheduler: powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\path\to\watch-status.ps1 cubby
+  cron:           * * * * * pwsh -NoProfile -File /path/to/watch-status.ps1 Cubby
+  Task Scheduler: powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\path\to\watch-status.ps1 Cubby
 
 On Windows, prefer wrapping the command with run-hidden.vbs (same folder):
-  wscript.exe C:\path\to\run-hidden.vbs powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\path\to\watch-status.ps1 cubby
+  wscript.exe C:\path\to\run-hidden.vbs powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\path\to\watch-status.ps1 Cubby
 powershell.exe is a console application, so Task Scheduler flashes a console
 window on every run during an interactive logon; run-hidden.vbs runs under
 wscript (a GUI-subsystem host), executes the command with no visible window,

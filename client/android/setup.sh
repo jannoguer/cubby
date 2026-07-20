@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# cubby Android client installer. Run on a fresh Termux session:
+# Cubby Android client installer. Run on a fresh Termux session:
 #   apt update && apt -y -o Dpkg::Options::=--force-confnew full-upgrade && apt -y install curl && curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/android/setup.sh | bash
 # The full-upgrade must precede installing curl: on an outdated bootstrap, new
 # curl links against OpenSSL 3.5+ QUIC symbols the bootstrap's libssl lacks,
@@ -99,10 +99,10 @@ until [ -S ~/.mutagen/daemon/daemon.sock ]; do
     [ "$n" -le 15 ] || { echo "ERROR: mutagen daemon did not start." >&2; exit 1; }
     sleep 1
 done
-if termux-chroot mutagen sync list cubby > /dev/null 2>&1; then
-    echo "Sync session cubby already exists."
+if termux-chroot mutagen sync list Cubby > /dev/null 2>&1; then
+    echo "Sync session Cubby already exists."
 else
-    termux-chroot mutagen sync create --name=cubby --ignore=/.cubby ~/storage/shared/Cubby cubby:/shared
+    termux-chroot mutagen sync create --name=Cubby --ignore=/.cubby ~/storage/shared/Cubby cubby:/shared
 fi
 termux-chroot mutagen sync list
 
