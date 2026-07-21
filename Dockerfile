@@ -1,4 +1,4 @@
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache openssh-server openssh-keygen
 
@@ -9,6 +9,7 @@ RUN printf '%s\n' \
     'PubkeyAuthentication yes' \
     'AllowUsers syncuser' \
     'AllowTcpForwarding no' \
+    'AllowAgentForwarding no' \
     'X11Forwarding no' \
     'PermitTunnel no' \
     'AuthorizedKeysFile /config/home/.ssh/authorized_keys' \
