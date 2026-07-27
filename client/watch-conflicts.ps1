@@ -69,9 +69,7 @@ if ($null -eq $MutagenCli) {
 
 $now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 
-# Overlapping scheduled runs would contend for the same staging file. exit
-# inside try still runs the finally block, so the mutex is always released;
-# the AbandonedMutexException catch covers holders that were hard-killed.
+# Overlapping scheduled runs would contend for the same staging file.
 $mutex = New-Object System.Threading.Mutex($false, "cubby-watch-conflicts-$(Get-SessionSlug $SessionName)")
 $acquired = $false
 try {

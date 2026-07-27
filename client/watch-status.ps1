@@ -63,15 +63,15 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'watch-common.ps1')
 
-# Normal syncing statuses (mutagen 0.18 API model strings); anything else
-# (disconnected, connecting-*, halted-*, ...) is an error condition.
+# Mutagen 0.18 API model strings; anything else (disconnected, connecting-*,
+# halted-*, ...) counts as an error condition.
 $OkStatuses = @(
     'watching', 'scanning', 'waiting-for-rescan', 'reconciling',
     'staging-alpha', 'staging-beta', 'transitioning', 'saving'
 )
 
-# Remembers the mapped directory between runs so status.err can still be
-# written when the daemon is unreachable.
+# Remembers the mapped directory so status.err can still be written when the
+# daemon is unreachable and cannot report it.
 function Get-CachePath {
     $base = [Environment]::GetFolderPath('LocalApplicationData')
     if ([string]::IsNullOrEmpty($base)) { $base = [System.IO.Path]::GetTempPath() }
@@ -82,14 +82,13 @@ function Get-CachePath {
     return Join-Path $cacheDir "$(Get-SessionSlug $SessionName).dir"
 }
 
-# Marker format is one key=value pair per line; embedded newlines in a value
-# would inject lines that parse as other keys.
+# The marker is one key=value per line, so a newline inside a value would
+# inject lines that parse as other keys.
 function ConvertTo-SingleLine([string]$Text) {
     return ($Text -replace "\r?\n", ' ')
 }
 
-# Stages the content, swaps it onto status.ok or status.err, and only then
-# removes the opposite marker, so at least one marker exists at all times.
+# The stale marker goes last, so at least one marker exists at all times.
 function Write-StatusMarker([string]$Dir, [bool]$Healthy, [string]$Content) {
     $markerDir = Join-Path $Dir '.cubby'
     if (-not (Test-Path -LiteralPath $markerDir)) {
@@ -123,9 +122,7 @@ if ($null -eq $MutagenCli) {
 
 $now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 
-# Overlapping scheduled runs would contend for the same staging file. exit
-# inside try still runs the finally block, so the mutex is always released;
-# the AbandonedMutexException catch covers holders that were hard-killed.
+# Overlapping scheduled runs would contend for the same staging file.
 $mutex = New-Object System.Threading.Mutex($false, "cubby-watch-status-$(Get-SessionSlug $SessionName)")
 $acquired = $false
 try {
@@ -145,7 +142,6 @@ try {
     $result = Get-SessionState -SessionName $SessionName -TimeoutSeconds $TimeoutSeconds -MutagenCli $MutagenCli
 
     if (-not $result.Ok) {
-        # Daemon or session unreachable: fall back to the cached directory.
         Write-Warning "[$now] $($result.Error)"
         $dir = $null
         if (Test-Path -LiteralPath $cachePath) {
@@ -178,7 +174,7 @@ try {
         Write-Warning "[$now] mapped directory '$dir' does not exist"
         exit 1
     }
-    # The cache is best-effort; a failed update must not block the marker write.
+    # Best-effort: a failed cache update must not block the marker write.
     try {
         [System.IO.File]::WriteAllText($cachePath, $dir)
     }

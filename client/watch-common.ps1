@@ -12,8 +12,8 @@ Keep this file next to watch-status.ps1 and watch-conflicts.ps1; they fail
 at startup without it.
 #>
 
-# Mutex/file-safe identifier; the hash suffix keeps names distinct when they
-# differ only in stripped characters ("a/b" vs "a_b").
+# The hash suffix keeps names that differ only in stripped characters
+# ("a/b" vs "a_b") from collapsing onto the same slug.
 function Get-SessionSlug([string]$Name) {
     $safe = $Name -replace '[^\w.-]', '_'
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -26,11 +26,9 @@ function Get-SessionSlug([string]$Name) {
     return "$safe-$(([System.BitConverter]::ToString($bytes, 0, 4) -replace '-', '').ToLower())"
 }
 
-# Service accounts (e.g. LocalSystem) lack per-user PATH entries, so when
-# the PATH lookup fails, probe each profile's install locations (official
-# installer and scoop). The fallback also returns that profile's .mutagen
-# data directory; without it the CLI would talk to the service account's
-# own (empty) daemon.
+# Service accounts (e.g. LocalSystem) lack per-user PATH entries, so fall back
+# to probing each profile. The .mutagen path comes back too, or the CLI would
+# talk to the service account's own empty daemon.
 function Resolve-MutagenCli {
     $cmd = Get-Command mutagen -ErrorAction SilentlyContinue
     if ($null -ne $cmd) {
@@ -50,8 +48,7 @@ function Resolve-MutagenCli {
     return $null
 }
 
-# Queries the session in a background job so a wedged daemon cannot hang the
-# probe. Returns @{ Ok = $true; Session = ... } or @{ Ok = $false; Error = ... }.
+# Runs in a background job so a wedged daemon cannot hang the probe.
 function Get-SessionState {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
@@ -64,7 +61,7 @@ function Get-SessionState {
         if ($DataDir -and -not $env:MUTAGEN_DATA_DIRECTORY) {
             $env:MUTAGEN_DATA_DIRECTORY = $DataDir
         }
-        # Stderr is collected separately: a warning printed alongside a
+        # Split back out of the merged stream: a warning printed alongside a
         # successful listing must not corrupt the JSON on stdout.
         $stdout = @(); $stderr = @()
         & $Exe sync list --template '{{ json . }}' $Name 2>&1 | ForEach-Object {
@@ -112,7 +109,6 @@ function Get-SessionState {
     return @{ Ok = $true; Session = $sessions[0] }
 }
 
-# The mapped directory is the endpoint that lives on this machine.
 function Resolve-MappedDir($Session) {
     foreach ($endpoint in @($Session.alpha, $Session.beta)) {
         if ($null -ne $endpoint -and $endpoint.protocol -eq 'local' -and $endpoint.path) {
@@ -122,10 +118,8 @@ function Resolve-MappedDir($Session) {
     return $null
 }
 
-# Renames the staged file onto the destination. File.Replace swaps in place
-# when the destination exists, so consumers never observe it missing.
-# Transient locks (a reader or scanner holding the destination open without
-# share-delete) fail both Replace and Move-Item, so retry briefly.
+# File.Replace swaps in place, so consumers never observe the destination
+# missing. A reader or scanner holding it open fails both calls, hence the retry.
 function Move-IntoPlace([string]$Stage, [string]$Destination) {
     $attempts = 3
     for ($i = 1; $i -le $attempts; $i++) {
@@ -138,7 +132,7 @@ function Move-IntoPlace([string]$Stage, [string]$Destination) {
                     return
                 }
                 catch [System.PlatformNotSupportedException] {
-                    # Filesystem without replace support; fall through to Move-Item.
+                    # No replace support on this filesystem; Move-Item handles it.
                 }
                 catch [System.IO.IOException] {
                     # Destination busy; Move-Item below decides, retried on failure.

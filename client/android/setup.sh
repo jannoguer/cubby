@@ -1,10 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Cubby Android client installer. Run on a fresh Termux session:
 #   apt update && apt -y -o Dpkg::Options::=--force-confnew full-upgrade && apt -y install curl && curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/android/setup.sh | bash
-# The full-upgrade must precede installing curl: on an outdated bootstrap, new
-# curl links against OpenSSL 3.5+ QUIC symbols the bootstrap's libssl lacks,
-# and fixing that needs package replacements plain upgrade holds back.
-# When piped through bash, stdin is the script itself, so prompts read from /dev/tty.
+# full-upgrade must precede installing curl: on an outdated bootstrap, new curl
+# links against OpenSSL 3.5+ QUIC symbols the bootstrap's libssl lacks, and the
+# package replacements that fixes are held back by a plain upgrade.
+# Piped through bash, stdin is the script itself, so prompts read from /dev/tty.
 # Non-interactive overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT.
 set -eu
 
@@ -28,16 +28,16 @@ TMP=${TMPDIR:-$PREFIX/tmp}
 curl -fL -o "$TMP/mutagen.tar.gz" "https://github.com/mutagen-io/mutagen/releases/download/${VERSION}/mutagen_linux_arm64_${VERSION}.tar.gz"
 
 echo "[3/9] Installing mutagen ${VERSION}"
-# The agent bundle must sit next to the binary: Mutagen looks for
-# mutagen-agents.tar.gz in its own directory when connecting to the server.
+# Mutagen looks for mutagen-agents.tar.gz in its own directory when connecting,
+# so the bundle has to land next to the binary.
 tar -xzf "$TMP/mutagen.tar.gz" -C "$PREFIX/bin" mutagen mutagen-agents.tar.gz
 rm "$TMP/mutagen.tar.gz"
 termux-chroot mutagen version
 
 echo "[4/9] SSH key"
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
-# No passphrase: the daemon reconnects in the background with no TTY or
-# agent, so it cannot decrypt a protected key.
+# No passphrase: the daemon reconnects in the background with no TTY or agent,
+# so it could not decrypt a protected key.
 if [ -f ~/.ssh/cubby ]; then
     echo "Key ~/.ssh/cubby already exists, keeping it."
 else
@@ -91,8 +91,8 @@ mkdir -p ~/storage/shared/Cubby
 
 echo "[9/9] Sync session"
 termux-chroot mutagen daemon run > /dev/null 2>&1 &
-# Wait for the daemon socket instead of probing with a client command: a
-# client probe would autostart its own daemon inside this proot and hang.
+# Wait on the socket rather than probing with a client command, which would
+# autostart its own daemon inside this proot and hang.
 n=0
 until [ -S ~/.mutagen/daemon/daemon.sock ]; do
     n=$((n + 1))
