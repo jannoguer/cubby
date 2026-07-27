@@ -1,7 +1,0 @@
-# Allowlist: the build needs entrypoint.sh and nothing else. Without this,
-# the context is the whole deployment directory, which on a live server
-# means config/ (the SSH host private key and the sync user's home),
-# shared/ (every synced file) and keys/. Docker does not read .gitignore.
-# Add a matching "!" line here when a new COPY is added to the Dockerfile.
-*
-!entrypoint.sh
