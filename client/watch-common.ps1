@@ -26,24 +26,34 @@ function Get-SessionSlug([string]$Name) {
     return "$safe-$(([System.BitConverter]::ToString($bytes, 0, 4) -replace '-', '').ToLower())"
 }
 
-# Service accounts (e.g. LocalSystem) lack per-user PATH entries, so fall back
-# to probing each profile. The .mutagen path comes back too, or the CLI would
-# talk to the service account's own empty daemon.
+# Service accounts (e.g. LocalSystem) lack per-user PATH entries, so a scheduled
+# run needs the location spelled out. It is never guessed by scanning C:\Users:
+# the first match there wins regardless of which install is legitimate, and any
+# local user can plant one in a profile they already own (C:\Users\Public needs
+# no privileges at all), which would run with the scheduled task's rights.
+#
+# The daemon's data directory must be named just as explicitly, or the CLI talks
+# to the service account's own empty daemon. Mutagen's own MUTAGEN_DATA_DIRECTORY
+# works if the scheduler can set it; CUBBY_MUTAGEN_DATA_DIR covers the rest.
 function Resolve-MutagenCli {
+    param([string]$MutagenPath)
+
+    $dataDir = $env:CUBBY_MUTAGEN_DATA_DIR
+    if ([string]::IsNullOrWhiteSpace($dataDir)) { $dataDir = $null }
+
+    if ([string]::IsNullOrWhiteSpace($MutagenPath)) { $MutagenPath = $env:CUBBY_MUTAGEN_PATH }
+
+    if (-not [string]::IsNullOrWhiteSpace($MutagenPath)) {
+        if (-not (Test-Path -LiteralPath $MutagenPath -PathType Leaf)) {
+            Write-Warning "mutagen was not found at '$MutagenPath'."
+            return $null
+        }
+        return @{ Path = (Resolve-Path -LiteralPath $MutagenPath).ProviderPath; DataDir = $dataDir }
+    }
+
     $cmd = Get-Command mutagen -ErrorAction SilentlyContinue
     if ($null -ne $cmd) {
-        return @{ Path = $cmd.Source; DataDir = $null }
-    }
-    $usersRoot = Join-Path "$env:SystemDrive\" 'Users'
-    if (Test-Path -LiteralPath $usersRoot) {
-        foreach ($userDir in Get-ChildItem -LiteralPath $usersRoot -Directory -ErrorAction SilentlyContinue) {
-            foreach ($rel in @('AppData\Local\Programs\mutagen\mutagen.exe', 'scoop\shims\mutagen.exe')) {
-                $exe = Join-Path $userDir.FullName $rel
-                if (Test-Path -LiteralPath $exe) {
-                    return @{ Path = $exe; DataDir = Join-Path $userDir.FullName '.mutagen' }
-                }
-            }
-        }
+        return @{ Path = $cmd.Source; DataDir = $dataDir }
     }
     return $null
 }

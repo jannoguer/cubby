@@ -20,15 +20,21 @@ contents and overwrites them. Create the sync session with --ignore=/.cubby
 (see the project README) so the markers do not propagate to other replicas.
 
 Works on Windows PowerShell 5.1 and PowerShell 7+ (macOS/Linux: run with
-pwsh). Uses the mutagen CLI from PATH, falling back to per-user install
-locations for scheduled runs under a service account. Requires
-watch-common.ps1 in the same directory.
+pwsh). Uses the mutagen CLI from PATH. Requires watch-common.ps1 in the same
+directory.
 
 .PARAMETER SessionName
 Name (or identifier) of the Mutagen sync session.
 
 .PARAMETER TimeoutSeconds
 Maximum time to wait for the Mutagen daemon to answer. Defaults to 30.
+
+.PARAMETER MutagenPath
+Full path to the mutagen executable, for scheduled runs under a service
+account whose PATH does not include it. Also settable as CUBBY_MUTAGEN_PATH.
+Such an account has its own empty daemon, so point the CLI at the right one
+with MUTAGEN_DATA_DIRECTORY, or CUBBY_MUTAGEN_DATA_DIR where the scheduler
+cannot set mutagen's own variable (e.g. C:\Users\you\.mutagen).
 
 .EXAMPLE
 pwsh -NoProfile -File watch-status.ps1 Cubby
@@ -56,7 +62,10 @@ param(
 
     [Parameter()]
     [ValidateRange(1, 3600)]
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+
+    [Parameter()]
+    [string]$MutagenPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,9 +123,9 @@ function Write-StatusMarker([string]$Dir, [bool]$Healthy, [string]$Content) {
     }
 }
 
-$MutagenCli = Resolve-MutagenCli
+$MutagenCli = Resolve-MutagenCli -MutagenPath $MutagenPath
 if ($null -eq $MutagenCli) {
-    Write-Warning 'mutagen was not found on PATH or in a per-user install location.'
+    Write-Warning 'mutagen was not found on PATH; pass -MutagenPath or set CUBBY_MUTAGEN_PATH.'
     exit 1
 }
 

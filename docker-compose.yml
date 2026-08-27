@@ -13,8 +13,6 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      # A process check, not a TCP connect: probing port 22 makes sshd log a
-      # preauth disconnect every interval.
       test: ["CMD", "pgrep", "sshd"]
       interval: 30s
       timeout: 5s

@@ -16,7 +16,7 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'AllowAgentForwarding no' \
     'X11Forwarding no' \
     'PermitTunnel no' \
-    'AuthorizedKeysFile /config/home/.ssh/authorized_keys' \
+    'AuthorizedKeysFile /etc/ssh/authorized_keys/%u' \
     'HostKey /config/ssh_host_keys/ssh_host_ed25519_key' \
     'ClientAliveInterval 60' \
     'ClientAliveCountMax 3' \
