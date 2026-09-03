@@ -3,14 +3,15 @@ FROM alpine:3.24
 RUN apk add --no-cache openssh-server openssh-keygen
 
 # A drop-in, not an append: sshd keeps the first value seen for a keyword and
-# the stock config already sets some of these, so only an Include (its line 1)
-# can override them.
+# the stock config already sets some of these, so only the Include (which the
+# stock file places before any directive) can override them.
 RUN mkdir -p /etc/ssh/sshd_config.d \
     && printf '%s\n' \
     'PasswordAuthentication no' \
     'KbdInteractiveAuthentication no' \
     'PermitRootLogin no' \
     'PubkeyAuthentication yes' \
+    'AuthenticationMethods publickey' \
     'AllowUsers syncuser' \
     'AllowTcpForwarding no' \
     'AllowAgentForwarding no' \
@@ -18,6 +19,8 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'PermitTunnel no' \
     'AuthorizedKeysFile /etc/ssh/authorized_keys/%u' \
     'HostKey /config/ssh_host_keys/ssh_host_ed25519_key' \
+    'LoginGraceTime 30' \
+    'MaxAuthTries 3' \
     'ClientAliveInterval 60' \
     'ClientAliveCountMax 3' \
     > /etc/ssh/sshd_config.d/10-cubby.conf

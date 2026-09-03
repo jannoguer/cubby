@@ -15,7 +15,7 @@ If you want to go straight forward, run this command:
 apt update && apt -y -o Dpkg::Options::=--force-confnew full-upgrade && apt -y install curl && curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/android/setup.sh | bash
 ```
 
-The script walks through the same steps below, prompting for the server address and pausing while you register the key on the server. `CUBBY_SERVER_IP` and `CUBBY_SERVER_PORT` environment variables skip the prompts.
+The script walks through the same steps below, prompting for the server address and pausing while you register the key on the server. `CUBBY_SERVER_IP` and `CUBBY_SERVER_PORT` skip the prompts and `CUBBY_MUTAGEN_VERSION` pins a Mutagen release. The one-liner already upgrades Termux, so the script's own upgrade step is quick there; it matters when the script is run on its own.
 
 ## Installation
 
@@ -28,11 +28,17 @@ pkg update -y && pkg upgrade -y -o Dpkg::Options::=--force-confnew
 pkg install -y openssh curl proot
 ```
 
-### 2. Download the latest Mutagen linux/arm64 build
+### 2. Download and verify the Mutagen linux/arm64 build
+
+Set `VERSION` to a specific release (e.g. `v0.18.1`, the version the server README is tested against) instead of the first line to pin it. The checksum catches a truncated or corrupted download; it comes from the same host as the archive, so it is no defense against a compromised release.
 
 ```bash
 VERSION=$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/mutagen-io/mutagen/releases/latest)")
-curl -fL -o mutagen.tar.gz "https://github.com/mutagen-io/mutagen/releases/download/${VERSION}/mutagen_linux_arm64_${VERSION}.tar.gz"
+BASE="https://github.com/mutagen-io/mutagen/releases/download/${VERSION}"
+ARCHIVE="mutagen_linux_arm64_${VERSION}.tar.gz"
+curl -fL -o "$ARCHIVE" "$BASE/$ARCHIVE"
+curl -fsSL -o SHA256SUMS "$BASE/SHA256SUMS"
+grep " $ARCHIVE\$" SHA256SUMS | sha256sum -c -
 ```
 
 ### 3. Install into Termux's bin
@@ -40,8 +46,8 @@ curl -fL -o mutagen.tar.gz "https://github.com/mutagen-io/mutagen/releases/downl
 The agent bundle must sit next to the binary: Mutagen looks for mutagen-agents.tar.gz in its own directory when connecting to the server.
 
 ```bash
-tar -xzf mutagen.tar.gz -C "$PREFIX/bin" mutagen mutagen-agents.tar.gz
-rm mutagen.tar.gz
+tar -xzf "$ARCHIVE" -C "$PREFIX/bin" mutagen mutagen-agents.tar.gz
+rm "$ARCHIVE" SHA256SUMS
 termux-chroot mutagen version
 ```
 

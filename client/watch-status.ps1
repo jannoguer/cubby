@@ -84,7 +84,7 @@ $OkStatuses = @(
 function Get-CachePath {
     $base = [Environment]::GetFolderPath('LocalApplicationData')
     if ([string]::IsNullOrEmpty($base)) { $base = [System.IO.Path]::GetTempPath() }
-    $cacheDir = Join-Path $base 'mutagen-watch'
+    $cacheDir = Join-Path $base 'cubby-watch'
     if (-not (Test-Path -LiteralPath $cacheDir)) {
         New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
     }
@@ -103,7 +103,7 @@ function Write-StatusMarker([string]$Dir, [bool]$Healthy, [string]$Content) {
     if (-not (Test-Path -LiteralPath $markerDir)) {
         New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
     }
-    $stage = Join-Path $markerDir 'status'
+    $stage = Join-Path $markerDir '.status.tmp'
     $ok = Join-Path $markerDir 'status.ok'
     $err = Join-Path $markerDir 'status.err'
     if ($Healthy) { $target = $ok; $stale = $err } else { $target = $err; $stale = $ok }
@@ -165,7 +165,7 @@ try {
                 "lastError=$(ConvertTo-SingleLine $result.Error)"
             ) -join "`n"
             Write-StatusMarker -Dir $dir -Healthy $false -Content $content
-            Write-Host "[$now] status.err written to $dir"
+            Write-Output "[$now] status.err written to $dir"
         }
         else {
             Write-Warning "[$now] synced directory unknown; no marker written"
@@ -217,7 +217,7 @@ try {
     ) -join "`n"
 
     Write-StatusMarker -Dir $dir -Healthy $healthy -Content $content
-    Write-Host "[$now] $(if ($healthy) { 'status.ok' } else { 'status.err' }) status=$status"
+    Write-Output "[$now] $(if ($healthy) { 'status.ok' } else { 'status.err' }) status=$status"
     exit 0
 }
 finally {

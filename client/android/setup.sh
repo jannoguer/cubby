@@ -5,7 +5,7 @@
 # links against OpenSSL 3.5+ QUIC symbols the bootstrap's libssl lacks, and the
 # package replacements that fixes are held back by a plain upgrade.
 # Piped through bash, stdin is the script itself, so prompts read from /dev/tty.
-# Non-interactive overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT.
+# Non-interactive overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_MUTAGEN_VERSION.
 set -eu
 
 case "${PREFIX-}" in
@@ -23,15 +23,20 @@ pkg update -y && pkg upgrade -y -o Dpkg::Options::=--force-confnew
 pkg install -y openssh curl proot
 
 echo "[2/9] Downloading Mutagen"
-VERSION=$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/mutagen-io/mutagen/releases/latest)")
+VERSION=${CUBBY_MUTAGEN_VERSION:-$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/mutagen-io/mutagen/releases/latest)")}
+BASE="https://github.com/mutagen-io/mutagen/releases/download/${VERSION}"
+ARCHIVE="mutagen_linux_arm64_${VERSION}.tar.gz"
 TMP=${TMPDIR:-$PREFIX/tmp}
-curl -fL -o "$TMP/mutagen.tar.gz" "https://github.com/mutagen-io/mutagen/releases/download/${VERSION}/mutagen_linux_arm64_${VERSION}.tar.gz"
+curl -fL -o "$TMP/$ARCHIVE" "$BASE/$ARCHIVE"
+curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS"
+# Same host as the archive: catches a bad download, not a compromised release.
+(cd "$TMP" && grep " $ARCHIVE\$" SHA256SUMS | sha256sum -c -)
 
 echo "[3/9] Installing mutagen ${VERSION}"
 # Mutagen looks for mutagen-agents.tar.gz in its own directory when connecting,
 # so the bundle has to land next to the binary.
-tar -xzf "$TMP/mutagen.tar.gz" -C "$PREFIX/bin" mutagen mutagen-agents.tar.gz
-rm "$TMP/mutagen.tar.gz"
+tar -xzf "$TMP/$ARCHIVE" -C "$PREFIX/bin" mutagen mutagen-agents.tar.gz
+rm "$TMP/$ARCHIVE" "$TMP/SHA256SUMS"
 termux-chroot mutagen version
 
 echo "[4/9] SSH key"

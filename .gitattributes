@@ -1,0 +1,2 @@
+# entrypoint.sh is copied into a Linux image; CRLF would break its shebang.
+* text=auto eol=lf

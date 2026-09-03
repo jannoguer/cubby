@@ -1,50 +1,38 @@
 # Cubby
 
-A barebones, self-hosted file sync server utilizing a minimal Alpine container running only `sshd` with key-only access. Syncing is handled by [Mutagen](https://mutagen.io) (built and tested against v0.18.1) over SSH.
+Self-hosted file sync: an Alpine container running only key-only `sshd`, [Mutagen](https://mutagen.io) (tested with v0.18.1) on the clients, and a second container snapshotting the data where clients cannot reach it. Android client: [docs/ANDROID_SETUP.md](docs/ANDROID_SETUP.md).
 
-For the Android client, see [Android Setup (Termux)](docs/ANDROID_SETUP.md).
+## Client
 
-## 1. Installation & Server Setup
-
-### Client
-
-**Install Mutagen:**
 ```bash
 brew install mutagen-io/mutagen/mutagen # macOS/Linux
 scoop install main/mutagen              # Windows
-```
-or grab a prebuilt binary from the [releases page](https://github.com/mutagen-io/mutagen/releases/latest).
-
-**Generate SSH Key:**
-```bash
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/cubby
 ```
+Prebuilt binaries: [releases page](https://github.com/mutagen-io/mutagen/releases/latest).
 
-### Server
+## Server
 
-**Initialize:** Clone this repo in your target directory and ensure TCP port `2222` is open on your server/VPS provider. Create the directories, add your key, stage the client helpers, and start the container:
+Clone the repo, open TCP `2222`, then:
 ```bash
-mkdir -p config shared keys
+mkdir -p config shared keys backups
+sudo chown 1000:1000 backups
 echo "PASTE_YOUR_CLIENT_PUB_KEY" > keys/laptop.pub
 mkdir -p shared/.cubby_client
 cp -rf client/. shared/.cubby_client/
 docker compose up --build -d
+docker compose logs cubby | grep 'Host key fingerprint'
 ```
 
-> [!NOTE]
-> The copy into `shared/.cubby_client` distributes the client helpers (watch scripts, systemd unit) to every device on its first sync; later sections reference them from there. Skipping it only costs you those helpers.
+- `keys/` holds one `.pub` per client; run `docker compose restart cubby` after changing it.
+- `shared/.cubby_client` ships the client helpers (watch scripts, systemd unit) to every device.
+- Files added to `shared/` from the host need `sudo chown -R 1000:1000 shared/<path>`; clients cannot change them otherwise.
+- Compare the printed fingerprint when a client first connects. Back up `config/`: it holds the host key.
+- Docker publishes past `ufw`. To bind elsewhere or tune backups, copy `.env.example` to `.env`.
 
-> [!NOTE]
-> `keys/` holds one `.pub` file per client (e.g., `laptop.pub`, `desktop-3.pub`); other files are ignored. Run `docker compose restart` after adding or deleting keys.
+## Sync
 
-> [!IMPORTANT]
-> `./config` holds the SSH host key and the sync user's home, **back this up**.
-
-
-## 2. Configuration & Syncing
-
-**SSH Config:** Add this host alias to `~/.ssh/config` so Mutagen can read it:
-
+Add to `~/.ssh/config`:
 ```text
 Host cubby
     HostName SERVER_IP
@@ -53,40 +41,45 @@ Host cubby
     IdentityFile ~/.ssh/cubby
     IdentitiesOnly yes
 ```
-
-**Create Sync Session:** Start syncing with the following command:
 ```bash
 mutagen sync create --name=Cubby --ignore=/.cubby /path/to/local/folder cubby:/shared
+mutagen sync list
+```
+`--ignore=/.cubby` keeps the watch scripts' markers local. Sync propagates deletions everywhere within seconds; the backups below are the safety net. Conflicts are never resolved with data loss: edit the side to keep and let it re-sync.
+
+**Daemon on boot.** Windows/macOS: `mutagen daemon register`. Linux, after the first sync has delivered the helpers:
+```bash
+mkdir -p ~/.config/systemd/user
+cp .cubby_client/linux/mutagen.service ~/.config/systemd/user/
+systemctl --user enable --now mutagen.service
+loginctl enable-linger $USER # on headless machines
 ```
 
-> [!NOTE]
-> The `--ignore` flag reserves the `.cubby` folder used by optional watch scripts, preventing their marker files from propagating to the server or other clients.
-
-**Start Daemon on Boot:** (RECOMMENDED)
-* **Windows/macOS:** Run `mutagen daemon register`.
-* **Linux:** `daemon register` is [not supported](https://mutagen.io/documentation/introduction/daemon/#system-management).
-    
-    Use the provided unit instead. It arrives with the first sync (staged into `shared/.cubby_client` during server setup), so wait for the session to settle, then:
-    ```bash
-    mkdir -p ~/.config/systemd/user
-    cp .cubby_client/linux/mutagen.service ~/.config/systemd/user/
-    systemctl --user enable --now mutagen.service
-    ```
-    *(Note: Run `loginctl enable-linger $USER` on headless machines so the daemon starts at boot)*.
-
-
-## 3. Managing Syncs & Conflicts
-
-Run `mutagen sync list` to check sessions status and conflicts.
-
-> [!CAUTION] 
-> The default `two-way-safe` mode never auto-resolves a conflict in a way that loses data. Resolve listed conflicts by editing the side you want to keep, then let it re-sync.
-
-
-## 4. Health and Conflict Markers (OPTIONAL)
-
-Every client already has schedulable probe scripts in `.cubby_client/` inside the sync root (staged there during server setup). They write machine-readable health and conflict markers under `.cubby/`; check their header comments for usage, cron/Task Scheduler examples, and exit codes. Keep `watch-common.ps1` next to the scripts; they dot-source it.
-
+**Health markers (optional).** The probe scripts in `.cubby_client/` write status and conflict markers under `.cubby/`; their headers document scheduling and exit codes.
 ```bash
 pwsh -NoProfile -File .cubby_client/watch-status.ps1 Cubby
+```
+
+## Backups
+
+`backups/` receives a browsable snapshot of `shared/` at start and every `BACKUP_INTERVAL` seconds (default one day), keeping `BACKUP_KEEP` (default 14); `backups/latest` is the newest. Unchanged files are hardlinks, so snapshots are cheap. They share the host's disk: copy `backups/` offsite to survive it. Restore by copying back and handing the files to the sync user:
+```bash
+ls backups/
+sudo cp -a backups/2026-09-03T030000Z/some/folder shared/some/
+sudo chown -R 1000:1000 shared/some/folder
+```
+
+## Maintenance
+
+Update (live sessions reconnect on their own):
+```bash
+git pull
+docker compose up --build -d
+cp -rf client/. shared/.cubby_client/
+```
+Add or revoke a client: edit `keys/`, then `docker compose restart cubby`.
+
+Rotate the host key: stop the stack, delete `config/ssh_host_keys/`, start it and note the new fingerprint. On every client:
+```bash
+ssh-keygen -R '[SERVER_IP]:2222'
 ```

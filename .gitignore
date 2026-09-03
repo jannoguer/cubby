@@ -1,3 +1,5 @@
 config/
 shared/
 keys/
+backups/
+.env

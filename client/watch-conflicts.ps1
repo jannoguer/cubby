@@ -144,7 +144,7 @@ try {
         }
     }
 
-    Write-Host "[$now] conflicts=$($conflicts.Count)"
+    Write-Output "[$now] conflicts=$($conflicts.Count)"
     exit 0
 }
 finally {

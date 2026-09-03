@@ -5,17 +5,79 @@ services:
     hostname: cubby
     init: true
     ports:
-      - "2222:22"
+      - "${CUBBY_BIND_ADDR:-0.0.0.0}:2222:22"
     volumes:
       - ./config:/config
       - ./shared:/shared
       - ./keys:/pubkeys:ro
+      # tmpfs defaults to 1777; StrictModes rejects a world-writable parent.
+      - type: tmpfs
+        target: /etc/ssh/authorized_keys
+        tmpfs:
+          mode: 0755
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN            # entrypoint: home and /shared ownership
+      - DAC_OVERRIDE     # entrypoint: read host-owned key files, chmod mounts
+      - FOWNER           # entrypoint: chmod on host-owned bind mounts
+      - KILL             # sshd: signal syncuser's session processes
+      - NET_BIND_SERVICE # sshd: bind port 22
+      - SETGID           # sshd: drop to syncuser and the privsep user
+      - SETUID
+      - SYS_CHROOT       # sshd: privilege separation chroot
     security_opt:
       - no-new-privileges:true
+    pids_limit: 256
+    # Raise if the Mutagen agent gets killed while scanning a very large tree.
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     healthcheck:
-      test: ["CMD", "pgrep", "sshd"]
+      # pgrep would still pass for a wedged sshd.
+      test: ["CMD-SHELL", "nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  # Never mounted into cubby: a client key cannot reach the snapshots.
+  backup:
+    build: ./backup
+    container_name: cubby-backup
+    init: true
+    environment:
+      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-86400}"
+      BACKUP_KEEP: "${BACKUP_KEEP:-14}"
+    volumes:
+      - ./shared:/shared:ro
+      - ./backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "test", "-d", "/backups/latest"]
+      interval: 5m
+      timeout: 5s
+      retries: 1
+      start_period: 10m
     restart: unless-stopped

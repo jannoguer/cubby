@@ -51,7 +51,7 @@ function Resolve-MutagenCli {
         return @{ Path = (Resolve-Path -LiteralPath $MutagenPath).ProviderPath; DataDir = $dataDir }
     }
 
-    $cmd = Get-Command mutagen -ErrorAction SilentlyContinue
+    $cmd = Get-Command mutagen -CommandType Application -ErrorAction SilentlyContinue
     if ($null -ne $cmd) {
         return @{ Path = $cmd.Source; DataDir = $dataDir }
     }
@@ -65,16 +65,21 @@ function Get-SessionState {
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
         [Parameter(Mandatory = $true)][hashtable]$MutagenCli
     )
+    # Windows PowerShell 5.1 cannot dereference members through $using:.
+    $exe = $MutagenCli.Path
+    $dataDir = $MutagenCli.DataDir
     $job = Start-Job -ScriptBlock {
-        param($Name, $Exe, $DataDir)
+        $exe = $using:exe
+        $dataDir = $using:dataDir
+        $name = $using:SessionName
         # Do not override an explicitly configured data directory.
-        if ($DataDir -and -not $env:MUTAGEN_DATA_DIRECTORY) {
-            $env:MUTAGEN_DATA_DIRECTORY = $DataDir
+        if ($dataDir -and -not $env:MUTAGEN_DATA_DIRECTORY) {
+            $env:MUTAGEN_DATA_DIRECTORY = $dataDir
         }
         # Split back out of the merged stream: a warning printed alongside a
         # successful listing must not corrupt the JSON on stdout.
         $stdout = @(); $stderr = @()
-        & $Exe sync list --template '{{ json . }}' $Name 2>&1 | ForEach-Object {
+        & $exe sync list --template '{{ json . }}' $name 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) { $stderr += "$_" }
             else { $stdout += "$_" }
         }
@@ -83,7 +88,7 @@ function Get-SessionState {
             ErrLines = $stderr
             ExitCode = $LASTEXITCODE
         }
-    } -ArgumentList $SessionName, $MutagenCli.Path, $MutagenCli.DataDir
+    }
 
     try {
         if ($null -eq (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
@@ -108,11 +113,14 @@ function Get-SessionState {
     }
 
     try {
-        $sessions = @($text | ConvertFrom-Json)
+        $parsed = $text | ConvertFrom-Json
     }
     catch {
         return @{ Ok = $false; Error = "could not parse mutagen output as JSON: $text" }
     }
+    # Windows PowerShell 5.1 emits a JSON array as one object; wrapping the
+    # pipeline directly in @() would nest it and the count check could never fire.
+    $sessions = @($parsed | Where-Object { $null -ne $_ })
     if ($sessions.Count -ne 1) {
         return @{ Ok = $false; Error = "'$SessionName' matched $($sessions.Count) sessions, expected exactly 1" }
     }
@@ -141,11 +149,10 @@ function Move-IntoPlace([string]$Stage, [string]$Destination) {
                     [System.IO.File]::Replace($Stage, $Destination, [NullString]::Value)
                     return
                 }
-                catch [System.PlatformNotSupportedException] {
-                    # No replace support on this filesystem; Move-Item handles it.
-                }
-                catch [System.IO.IOException] {
-                    # Destination busy; Move-Item below decides, retried on failure.
+                catch [System.PlatformNotSupportedException], [System.IO.IOException] {
+                    # No replace support on this filesystem, or the destination
+                    # is busy: Move-Item below handles both, retried on failure.
+                    Write-Verbose "File.Replace failed ($($_.Exception.GetType().Name)); falling back to Move-Item"
                 }
             }
             Move-Item -LiteralPath $Stage -Destination $Destination -Force
