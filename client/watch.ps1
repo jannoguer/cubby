@@ -16,9 +16,10 @@ Markers, each staged and swapped in so consumers never see a partial file:
 
 The status marker also summarizes the server's backup marker (.cubby/
 backup_status.ok or .err, synced from the server): backupStatus=
-ok|stale|failed|unknown, backupCount, backupLast, backupLastResult and
-backupUpdatedAt. Stale means older than twice the backup interval. Backups
-never change healthy=.
+ok|partial|stale|failed|unknown, backupCount, backupLast, backupLastResult,
+backupSkipped and backupUpdatedAt. Partial means the last snapshot skipped
+backupSkipped unreadable paths (listed in the server log); stale means older
+than twice the backup interval. Backups never change healthy=.
 
 The local directory is cached so status.err can still be written when the
 daemon is unreachable.
@@ -233,7 +234,7 @@ function ConvertTo-SingleLine([string]$Text) {
 # Reads the server's marker; .err wins over .ok, and a missing or malformed
 # marker is unknown rather than an error of this probe.
 function Get-BackupSummary([string]$Dir) {
-    $summary = @{ Status = 'unknown'; Count = ''; Last = ''; LastResult = ''; UpdatedAt = '' }
+    $summary = @{ Status = 'unknown'; Count = ''; Last = ''; LastResult = ''; Skipped = ''; UpdatedAt = '' }
     $markerDir = Join-Path $Dir '.cubby'
     $err = Join-Path $markerDir 'backup_status.err'
     $ok = Join-Path $markerDir 'backup_status.ok'
@@ -249,6 +250,7 @@ function Get-BackupSummary([string]$Dir) {
     $summary.Count = "$($fields['snapshots'])"
     $summary.Last = "$($fields['lastSnapshot'])"
     $summary.LastResult = "$($fields['lastResult'])"
+    $summary.Skipped = "$($fields['skipped'])"
     $summary.UpdatedAt = "$($fields['updatedAt'])"
     if ($summary.Status -ne 'ok') { return $summary }
 
@@ -263,6 +265,9 @@ function Get-BackupSummary([string]$Dir) {
     # Same rule as the server healthcheck: one interval would flap on a slow rsync.
     if (([DateTime]::UtcNow - $updated).TotalSeconds -gt 2 * $interval) {
         $summary.Status = 'stale'
+    }
+    elseif ($summary.LastResult -eq 'partial') {
+        $summary.Status = 'partial'
     }
     return $summary
 }
@@ -287,6 +292,7 @@ function Format-BackupSummary([hashtable]$Backup) {
         "backupCount=$($Backup.Count)"
         "backupLast=$($Backup.Last)"
         "backupLastResult=$($Backup.LastResult)"
+        "backupSkipped=$($Backup.Skipped)"
         "backupUpdatedAt=$($Backup.UpdatedAt)"
     )
 }

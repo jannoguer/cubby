@@ -67,7 +67,7 @@ pwsh -NoProfile -File .cubby/client/watch.ps1 Cubby
 
 ## Backups
 
-Hardlinked snapshots of `shared/` in `backups/` at start and every `BACKUP_INTERVAL` seconds (default one day), keeping `BACKUP_KEEP` (default 14); `backups/latest` is the newest. Copy offsite with `rsync -aH`. `docker compose ps` shows the container unhealthy after two missed intervals. Restore:
+Hardlinked snapshots of `shared/` in `backups/` at start and every `BACKUP_INTERVAL` seconds (default one day), keeping `BACKUP_KEEP` (default 14); `backups/latest` is the newest. Copy offsite with `rsync -aH`. `docker compose ps` shows the container unhealthy after two missed intervals. Unreadable paths are skipped and logged; the snapshot is kept and `backup_status.ok` says `lastResult=partial`. Restore:
 ```bash
 sudo cp -a backups/2026-09-03T030000Z/some/folder shared/some/
 sudo chown -R 1000:1000 shared/some/folder

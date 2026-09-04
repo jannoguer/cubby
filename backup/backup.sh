@@ -58,38 +58,50 @@ count_snapshots() {
 }
 
 snapshot_rc=0
+snapshot_skipped=0
+RSYNC_ERR=/tmp/rsync-errors
 snapshot() {
     ts=$(date -u +%Y-%m-%dT%H%M%SZ)
     incoming="$DST/.incoming-$ts"
-
-    # Staging left behind by an interrupted run.
     # A restart right after a run: mv would nest the new tree inside the old one.
     if [ -e "$DST/$ts" ]; then
         echo "[$ts] snapshot already exists; skipping this run" >&2
         return 0
     fi
+
+    # Staging left behind by an interrupted run.
     for d in "$DST"/.incoming-*; do
         [ -e "$d" ] && rm -rf "$d"
     done
 
     # As uid 1000 rsync cannot chown, and the source is already ours.
+    # Du+rwx: a directory copied without owner access could never be pruned.
     # The backup marker is this script's own output.
     set -- -a --no-owner --no-group --delete --chmod=Du+rwx \
-    # Du+rwx: a directory copied without owner access could never be pruned.
         --exclude=/.cubby/backup_status.ok --exclude=/.cubby/backup_status.err \
         --exclude=/.cubby/.backup_status.tmp
     if [ -d "$DST/latest" ]; then
         set -- "$@" --link-dest="$DST/latest"
     fi
     rc=0
-    rsync "$@" "$SRC/" "$incoming/" || rc=$?
-    # 24: files vanished mid-copy, expected on a live sync root.
-    if [ "$rc" -ne 0 ] && [ "$rc" -ne 24 ]; then
-        echo "[$ts] WARNING: rsync exited with code $rc; snapshot discarded" >&2
-        rm -rf "$incoming"
-        snapshot_rc=$rc
-        return 1
-    fi
+    rsync "$@" "$SRC/" "$incoming/" 2> "$RSYNC_ERR" || rc=$?
+    cat "$RSYNC_ERR" >&2
+    snapshot_skipped=0
+    case "$rc" in
+        # 24: files vanished mid-copy, expected on a live sync root.
+        0|24) ;;
+        # 23: unreadable paths (listed above) were skipped; the rest is still worth keeping.
+        23)
+            snapshot_skipped=$(grep -c '^rsync: ' "$RSYNC_ERR")
+            echo "[$ts] WARNING: $snapshot_skipped path(s) skipped; snapshot kept without them" >&2
+            ;;
+        *)
+            echo "[$ts] WARNING: rsync exited with code $rc; snapshot discarded" >&2
+            rm -rf "$incoming"
+            snapshot_rc=$rc
+            return 1
+            ;;
+    esac
     mv "$incoming" "$DST/$ts"
     # Relative target so the link also resolves on the host.
     ln -sfn "$ts" "$DST/latest"
@@ -111,10 +123,11 @@ snapshot() {
 
 # key=value like the client markers. The stale marker goes last, so exactly one
 # exists after each run. Never fatal: the snapshot itself succeeded or failed already.
+# A partial snapshot is still a snapshot: .ok with lastResult=partial and skipped=N.
 failures=0
 write_status() {
     result=$1
-    if [ "$result" = ok ]; then
+    if [ "$result" = ok ] || [ "$result" = partial ]; then
         marker=backup_status.ok; stale=backup_status.err
     else
         marker=backup_status.err; stale=backup_status.ok
@@ -126,6 +139,7 @@ write_status() {
         "updatedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "lastSnapshot=$latest" \
         "lastResult=$result" \
+        "skipped=$snapshot_skipped" \
         "snapshots=$(count_snapshots)" \
         "keep=$KEEP" \
         "interval=$INTERVAL" \
@@ -140,7 +154,7 @@ write_status() {
 while :; do
     if snapshot; then
         failures=0
-        write_status ok
+        if [ "$snapshot_skipped" -eq 0 ]; then write_status ok; else write_status partial; fi
     else
         failures=$((failures + 1))
         write_status "rsync-$snapshot_rc"
