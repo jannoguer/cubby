@@ -20,12 +20,11 @@ if [ -n "$served" ]; then
 else
     echo "WARNING: no usable public keys in /pubkeys; add a world-readable .pub file to keys/, no restart needed." >&2
 fi
+# Same test as cubby-authorized-keys, as the same user; -s runs the program directly.
 for f in /pubkeys/*.pub; do
     [ -e "$f" ] || continue
-    tr -d '\r' < "$f" | grep -v '^[[:space:]]*$' | while IFS= read -r line; do
-        printf '%s\n' "$served" | grep -qxF -- "$line" \
-            || echo "WARNING: $f is not served: malformed, or not readable by nobody (chmod 644 on the host)." >&2
-    done
+    su -s /usr/bin/ssh-keygen nobody -- -lf "$f" > /dev/null 2>&1 \
+        || echo "WARNING: $f is not served: malformed, or not readable by nobody (chmod 644 on the host)." >&2
 done
 
 mkdir -p /shared
