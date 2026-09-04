@@ -3,9 +3,7 @@ set -eu
 
 HOME_DIR=/config/home
 KEYDIR=/config/ssh_host_keys
-# Outside the sync user's home on purpose: syncuser gets a shell there and could
-# point a symlink at a root-owned file to have the writes below land on it.
-AK_DIR=/etc/ssh/authorized_keys
+CUBBY_DIR=/shared/.cubby
 
 mkdir -p "$KEYDIR"
 [ -f "$KEYDIR/ssh_host_ed25519_key" ] || ssh-keygen -q -t ed25519 -N "" -f "$KEYDIR/ssh_host_ed25519_key"
@@ -13,48 +11,54 @@ chmod 600 "$KEYDIR"/*_key
 chmod 644 "$KEYDIR"/*_key.pub 2>/dev/null || true
 echo "Host key fingerprint: $(ssh-keygen -lf "$KEYDIR/ssh_host_ed25519_key.pub")"
 
-mkdir -p "$AK_DIR"
-: > "$AK_DIR/syncuser"
-found=0
+# Report only: sshd reads /pubkeys live through cubby-authorized-keys at every
+# login. Run the same command as the same user, so what prints is what logs in.
+served=$(su -s /bin/sh nobody -c '/usr/local/bin/cubby-authorized-keys syncuser')
+if [ -n "$served" ]; then
+    echo "Authorized keys:"
+    printf '%s\n' "$served" | ssh-keygen -lf - | sed 's/^/  /'
+else
+    echo "WARNING: no usable public keys in /pubkeys; add a world-readable .pub file to keys/, no restart needed." >&2
+fi
 for f in /pubkeys/*.pub; do
     [ -e "$f" ] || continue
-    # sshd skips unparseable lines silently; fail loudly here instead.
-    if ! fingerprints=$(ssh-keygen -lf "$f" 2>&1); then
-        echo "WARNING: skipping $f: $fingerprints" >&2
-        continue
-    fi
-    cat "$f" >> "$AK_DIR/syncuser"
-    # A key file with no trailing newline would glue the next key onto its line
-    # and invalidate both; sshd ignores the blank lines this adds.
-    echo >> "$AK_DIR/syncuser"
-    echo "Authorized $f:"
-    echo "$fingerprints" | sed 's/^/  /'
-    found=1
+    tr -d '\r' < "$f" | grep -v '^[[:space:]]*$' | while IFS= read -r line; do
+        printf '%s\n' "$served" | grep -qxF -- "$line" \
+            || echo "WARNING: $f is not served: malformed, or not readable by nobody (chmod 644 on the host)." >&2
+    done
 done
-
-if [ "$found" -eq 0 ]; then
-    echo "ERROR: no valid public keys found in /pubkeys (need at least one .pub file)." >&2
-    echo "Sleeping indefinitely to prevent a crash loop. Add a key and restart." >&2
-    sleep infinity
-fi
 
 mkdir -p /shared
 
 chmod 755 /config
-chmod 755 "$AK_DIR"
-chmod 644 "$AK_DIR/syncuser"
-# The /config mount shadows the home directory adduser created in the image.
-# Not recursive: the Mutagen agent creates everything below as syncuser.
+# The /config mount shadows the home adduser created in the image.
 mkdir -p "$HOME_DIR"
 chown syncuser:syncuser "$HOME_DIR"
-# Checking only the root keeps a restart off a recursive chown of a large tree.
-# Files added from the host under another owner need a manual chown to 1000:1000.
+# Root only: a recursive chown of a large tree on every restart is too slow.
 [ "$(stat -c %u /shared)" = "1000" ] || chown -R syncuser:syncuser /shared
 
-# One clear message instead of a restart loop on an sshd that dies at every start.
+# A symlink planted by a client would send the root writes below elsewhere.
+for d in "$CUBBY_DIR" "$CUBBY_DIR/client"; do
+    if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+        rm -f "$d"
+    fi
+done
+mkdir -p "$CUBBY_DIR"
+# Not recursive: the markers inside belong to whoever wrote them.
+chown syncuser:syncuser "$CUBBY_DIR"
+# rsync rather than rm+cp: unchanged files stay untouched and the tree never
+# disappears, so clients have nothing spurious to sync. --delete stays inside client/.
+rsync -a --delete --chown=syncuser:syncuser /opt/cubby/client/ "$CUBBY_DIR/client/"
+
+# Fail once with the reason instead of restart-looping.
 if ! /usr/sbin/sshd -t; then
     echo "ERROR: sshd configuration is invalid (see above)." >&2
     exit 1
 fi
+
+# Seed the served-key list, then cut open sessions when a key is deleted,
+# moved out or rewritten (see cubby-on-key-change).
+/usr/local/bin/cubby-on-key-change
+inotifyd /usr/local/bin/cubby-on-key-change /pubkeys:dmwy &
 
 exec /usr/sbin/sshd -D -e

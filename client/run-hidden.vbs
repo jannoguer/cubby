@@ -1,6 +1,5 @@
-' Runs the command given as arguments with no visible window and returns its
-' exit code. Task Scheduler flashes a console when it starts a console app
-' under an interactive logon; wscript is GUI-subsystem, so it stays invisible.
+' Runs its arguments with no visible window and forwards the exit code: Task
+' Scheduler flashes a console for console apps, wscript is GUI-subsystem.
 
 Function QuoteArg(arg)
     Dim i, ch, slashes, out
@@ -15,8 +14,7 @@ Function QuoteArg(arg)
         If ch = "\" Then
             slashes = slashes + 1
         ElseIf ch = """" Then
-            ' Backslashes double only where they precede a quote, so a plain
-            ' Replace would corrupt ordinary paths ending in a separator.
+            ' Backslashes double only before a quote; a plain Replace would break paths.
             out = out & String(slashes * 2 + 1, "\") & """"
             slashes = 0
         Else

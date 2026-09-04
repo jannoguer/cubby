@@ -1,6 +1,6 @@
 # Cubby
 
-Self-hosted file sync: an Alpine container running only key-only `sshd`, [Mutagen](https://mutagen.io) (tested with v0.18.1) on the clients, and a second container snapshotting the data where clients cannot reach it. Android client: [docs/ANDROID_SETUP.md](docs/ANDROID_SETUP.md).
+Self-hosted file sync: an Alpine container running key-only `sshd`, [Mutagen](https://mutagen.io) (tested with v0.18.1) on the clients, and a second container snapshotting the data where clients cannot reach it. Android client: [docs/ANDROID_SETUP.md](docs/ANDROID_SETUP.md).
 
 ## Client
 
@@ -18,21 +18,19 @@ Clone the repo, open TCP `2222`, then:
 mkdir -p config shared keys backups
 sudo chown 1000:1000 backups
 echo "PASTE_YOUR_CLIENT_PUB_KEY" > keys/laptop.pub
-mkdir -p shared/.cubby_client
-cp -rf client/. shared/.cubby_client/
 docker compose up --build -d
 docker compose logs cubby | grep 'Host key fingerprint'
 ```
 
-- `keys/` holds one `.pub` per client; run `docker compose restart cubby` after changing it.
-- `shared/.cubby_client` ships the client helpers (watch scripts, systemd unit) to every device.
-- Files added to `shared/` from the host need `sudo chown -R 1000:1000 shared/<path>`; clients cannot change them otherwise.
-- Compare the printed fingerprint when a client first connects. Back up `config/`: it holds the host key.
+- `keys/`: one world-readable `.pub` per client. Changes apply live, no restart.
+- `shared/.cubby/`: `client/` (helpers, overwritten from the image at every start), `backup_status.ok|err` (written by the backup container), `local/` (each client's own markers, never synced).
+- Files added to `shared/` from the host need `sudo chown -R 1000:1000 shared/<path>`.
+- Back up `config/`: it holds the host key.
 - Docker publishes past `ufw`. To bind elsewhere or tune backups, copy `.env.example` to `.env`.
 
 ## Sync
 
-Add to `~/.ssh/config`:
+`~/.ssh/config`:
 ```text
 Host cubby
     HostName SERVER_IP
@@ -42,44 +40,46 @@ Host cubby
     IdentitiesOnly yes
 ```
 ```bash
-mutagen sync create --name=Cubby --ignore=/.cubby /path/to/local/folder cubby:/shared
+mutagen sync create --name=Cubby --ignore=/.cubby/local /path/to/local/folder cubby:/shared
 mutagen sync list
 ```
-`--ignore=/.cubby` keeps the watch scripts' markers local. Sync propagates deletions everywhere within seconds; the backups below are the safety net. Conflicts are never resolved with data loss: edit the side to keep and let it re-sync.
+Compare the fingerprint ssh shows with the server log. In Git Bash prefix the command with `MSYS_NO_PATHCONV=1`. Deletions propagate within seconds; the backups are the safety net. Conflicts are never resolved with data loss: edit the side to keep.
 
-**Daemon on boot.** Windows/macOS: `mutagen daemon register`. Linux, after the first sync has delivered the helpers:
+**Daemon on boot.**
+
+Windows/macOS:
+```bash
+mutagen daemon register
+```
+
+Linux:
 ```bash
 mkdir -p ~/.config/systemd/user
-cp .cubby_client/linux/mutagen.service ~/.config/systemd/user/
+cp .cubby/client/linux/mutagen.service ~/.config/systemd/user/
 systemctl --user enable --now mutagen.service
 loginctl enable-linger $USER # on headless machines
 ```
 
-**Health markers (optional).** The probe scripts in `.cubby_client/` write status and conflict markers under `.cubby/`; their headers document scheduling and exit codes.
+**Health markers (optional).** Writes `status.ok|err` (sync health plus backup summary) and `conflicts.json` into `.cubby/local/`; the script header has fields, scheduling and exit codes.
 ```bash
-pwsh -NoProfile -File .cubby_client/watch-status.ps1 Cubby
+pwsh -NoProfile -File .cubby/client/watch.ps1 Cubby
 ```
 
 ## Backups
 
-`backups/` receives a browsable snapshot of `shared/` at start and every `BACKUP_INTERVAL` seconds (default one day), keeping `BACKUP_KEEP` (default 14); `backups/latest` is the newest. Unchanged files are hardlinks, so snapshots are cheap. They share the host's disk: copy `backups/` offsite to survive it. Restore by copying back and handing the files to the sync user:
+Hardlinked snapshots of `shared/` in `backups/` at start and every `BACKUP_INTERVAL` seconds (default one day), keeping `BACKUP_KEEP` (default 14); `backups/latest` is the newest. Copy offsite with `rsync -aH`. `docker compose ps` shows the container unhealthy after two missed intervals. Restore:
 ```bash
-ls backups/
 sudo cp -a backups/2026-09-03T030000Z/some/folder shared/some/
 sudo chown -R 1000:1000 shared/some/folder
 ```
 
 ## Maintenance
 
-Update (live sessions reconnect on their own):
+Update:
 ```bash
 git pull
 docker compose up --build -d
-cp -rf client/. shared/.cubby_client/
 ```
-Add or revoke a client: edit `keys/`, then `docker compose restart cubby`.
+Add a client: drop its `.pub` into `keys/`. Revoke: delete it; its open session is cut within a second and the other clients reconnect.
 
-Rotate the host key: stop the stack, delete `config/ssh_host_keys/`, start it and note the new fingerprint. On every client:
-```bash
-ssh-keygen -R '[SERVER_IP]:2222'
-```
+Rotate the host key: stop the stack, delete `config/ssh_host_keys/`, start it and note the new fingerprint. On every client: `ssh-keygen -R '[SERVER_IP]:2222'`.

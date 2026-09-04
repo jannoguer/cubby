@@ -1,11 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Cubby Android client installer. Run on a fresh Termux session:
-#   apt update && apt -y -o Dpkg::Options::=--force-confnew full-upgrade && apt -y install curl && curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/android/setup.sh | bash
-# full-upgrade must precede installing curl: on an outdated bootstrap, new curl
-# links against OpenSSL 3.5+ QUIC symbols the bootstrap's libssl lacks, and the
-# package replacements that fixes are held back by a plain upgrade.
+# Cubby Android client installer; docs/ANDROID_SETUP.md has the one-line invocation.
+# full-upgrade before installing curl: on an old bootstrap the new curl needs
+# OpenSSL symbols a plain upgrade holds back.
 # Piped through bash, stdin is the script itself, so prompts read from /dev/tty.
-# Non-interactive overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_MUTAGEN_VERSION.
+# Overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_HOST_FINGERPRINT, CUBBY_MUTAGEN_VERSION.
 set -eu
 
 case "${PREFIX-}" in
@@ -33,23 +31,21 @@ curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS"
 (cd "$TMP" && grep " $ARCHIVE\$" SHA256SUMS | sha256sum -c -)
 
 echo "[3/9] Installing mutagen ${VERSION}"
-# Mutagen looks for mutagen-agents.tar.gz in its own directory when connecting,
-# so the bundle has to land next to the binary.
+# Mutagen expects mutagen-agents.tar.gz next to its own binary.
 tar -xzf "$TMP/$ARCHIVE" -C "$PREFIX/bin" mutagen mutagen-agents.tar.gz
 rm "$TMP/$ARCHIVE" "$TMP/SHA256SUMS"
 termux-chroot mutagen version
 
 echo "[4/9] SSH key"
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
-# No passphrase: the daemon reconnects in the background with no TTY or agent,
-# so it could not decrypt a protected key.
+# No passphrase: the daemon reconnects with no TTY or agent to decrypt one.
 if [ -f ~/.ssh/cubby ]; then
     echo "Key ~/.ssh/cubby already exists, keeping it."
 else
     ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/cubby
 fi
 
-echo "[5/9] Register this public key on the server (e.g. keys/phone.pub), then run 'docker compose restart' there:"
+echo "[5/9] Register this public key on the server as keys/phone.pub (chmod 644); it works at once, no restart:"
 echo
 cat ~/.ssh/cubby.pub
 echo
@@ -83,8 +79,26 @@ EOF
     chmod 600 ~/.ssh/config
 fi
 
-echo "[7/9] Accepting the server host key"
-ssh -o StrictHostKeyChecking=accept-new cubby true
+echo "[7/9] Server host key"
+if [ -n "${CUBBY_HOST_FINGERPRINT-}" ]; then
+    # Unattended: pin the key ourselves if it matches; ssh below then verifies against it.
+    HOST=$(ssh -G cubby 2>/dev/null | awk '/^hostname /{print $2}')
+    PORT=$(ssh -G cubby 2>/dev/null | awk '/^port /{print $2}')
+    # Newer ssh-keyscan prints its banner comment on stdout.
+    KEYLINE=$(ssh-keyscan -p "$PORT" -t ed25519 "$HOST" 2>/dev/null | grep -v '^#') || true
+    [ -n "$KEYLINE" ] || { echo "ERROR: could not fetch the host key from $HOST port $PORT." >&2; exit 1; }
+    FINGERPRINT=$(printf '%s\n' "$KEYLINE" | ssh-keygen -lf - | awk '{print $2}')
+    if [ "$FINGERPRINT" != "$CUBBY_HOST_FINGERPRINT" ]; then
+        echo "ERROR: server presented $FINGERPRINT, expected $CUBBY_HOST_FINGERPRINT." >&2
+        exit 1
+    fi
+    printf '%s\n' "$KEYLINE" >> ~/.ssh/known_hosts
+    chmod 600 ~/.ssh/known_hosts
+fi
+# Interactive: ssh itself shows the fingerprint on first contact and asks on the
+# terminal; a known host connects silently. -T: stdin is the piped script.
+echo "Compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs cubby'."
+ssh -T -o StrictHostKeyChecking=ask cubby true
 
 echo "[8/9] Shared storage"
 if [ ! -L ~/storage/shared ]; then
@@ -96,8 +110,7 @@ mkdir -p ~/storage/shared/Cubby
 
 echo "[9/9] Sync session"
 termux-chroot mutagen daemon run > /dev/null 2>&1 &
-# Wait on the socket rather than probing with a client command, which would
-# autostart its own daemon inside this proot and hang.
+# A client command would autostart its own daemon inside this proot and hang.
 n=0
 until [ -S ~/.mutagen/daemon/daemon.sock ]; do
     n=$((n + 1))
@@ -107,7 +120,8 @@ done
 if termux-chroot mutagen sync list Cubby > /dev/null 2>&1; then
     echo "Sync session Cubby already exists."
 else
-    termux-chroot mutagen sync create --name=Cubby --ignore=/.cubby ~/storage/shared/Cubby cubby:/shared
+    # .cubby/local holds this device's health markers.
+    termux-chroot mutagen sync create --name=Cubby --ignore=/.cubby/local ~/storage/shared/Cubby cubby:/shared
 fi
 termux-chroot mutagen sync list
 

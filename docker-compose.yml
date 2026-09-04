@@ -10,11 +10,6 @@ services:
       - ./config:/config
       - ./shared:/shared
       - ./keys:/pubkeys:ro
-      # tmpfs defaults to 1777; StrictModes rejects a world-writable parent.
-      - type: tmpfs
-        target: /etc/ssh/authorized_keys
-        tmpfs:
-          mode: 0755
     read_only: true
     tmpfs:
       - /run
@@ -54,12 +49,17 @@ services:
     build: ./backup
     container_name: cubby-backup
     init: true
+    # The cubby entrypoint hands shared/.cubby to uid 1000 before the first marker write.
+    depends_on:
+      - cubby
     environment:
       BACKUP_INTERVAL: "${BACKUP_INTERVAL:-86400}"
       BACKUP_KEEP: "${BACKUP_KEEP:-14}"
     volumes:
       - ./shared:/shared:ro
       - ./backups:/backups
+      # Only the backup_status marker is written here; it syncs to every client.
+      - ./shared/.cubby:/status
     read_only: true
     tmpfs:
       - /tmp
@@ -75,7 +75,7 @@ services:
         max-size: 10m
         max-file: "3"
     healthcheck:
-      test: ["CMD", "test", "-d", "/backups/latest"]
+      test: ["CMD", "/backup.sh", "check"]
       interval: 5m
       timeout: 5s
       retries: 1

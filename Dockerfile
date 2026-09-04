@@ -1,10 +1,9 @@
 FROM alpine:3.24
 
-RUN apk add --no-cache openssh-server openssh-keygen
+RUN apk add --no-cache openssh-server openssh-keygen rsync
 
-# A drop-in, not an append: sshd keeps the first value seen for a keyword and
-# the stock config already sets some of these, so only the Include (which the
-# stock file places before any directive) can override them.
+# sshd keeps the first value seen per keyword and the stock file sets some of
+# these, so only the Include placed ahead of them can override.
 RUN mkdir -p /etc/ssh/sshd_config.d \
     && printf '%s\n' \
     'PasswordAuthentication no' \
@@ -17,7 +16,9 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'AllowAgentForwarding no' \
     'X11Forwarding no' \
     'PermitTunnel no' \
-    'AuthorizedKeysFile /etc/ssh/authorized_keys/%u' \
+    'AuthorizedKeysFile none' \
+    'AuthorizedKeysCommand /usr/local/bin/cubby-authorized-keys %u' \
+    'AuthorizedKeysCommandUser nobody' \
     'HostKey /config/ssh_host_keys/ssh_host_ed25519_key' \
     'LoginGraceTime 30' \
     'MaxAuthTries 3' \
@@ -25,14 +26,18 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'ClientAliveCountMax 3' \
     > /etc/ssh/sshd_config.d/10-cubby.conf
 
-# adduser -D leaves "!" in /etc/shadow, which sshd reads as a locked account and
-# refuses even for key auth; "*" denies password login without locking.
+# adduser -D writes "!" to /etc/shadow, which sshd treats as locked even for key auth.
 RUN mkdir -p /config \
     && adduser -D -h /config/home -s /bin/sh -u 1000 syncuser \
     && sed -i 's|^syncuser:!:|syncuser:*:|' /etc/shadow
 
+COPY client/ /opt/cubby/client/
+
+# sshd refuses an AuthorizedKeysCommand that is not root-owned and unwritable by others.
+COPY authorized-keys.sh /usr/local/bin/cubby-authorized-keys
+COPY on-key-change.sh /usr/local/bin/cubby-on-key-change
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod 755 /usr/local/bin/cubby-authorized-keys /usr/local/bin/cubby-on-key-change /entrypoint.sh
 
 EXPOSE 22
 
