@@ -36,8 +36,8 @@ services:
         max-size: 10m
         max-file: "3"
     healthcheck:
-      # pgrep would still pass for a wedged sshd.
-      test: ["CMD-SHELL", "nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'"]
+      # pgrep would still pass for a wedged sshd; the key watcher has nothing else to probe.
+      test: ["CMD-SHELL", "pgrep -x inotifyd >/dev/null && nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'"]
       interval: 30s
       timeout: 5s
       retries: 3
