@@ -63,13 +63,19 @@ snapshot() {
     incoming="$DST/.incoming-$ts"
 
     # Staging left behind by an interrupted run.
+    # A restart right after a run: mv would nest the new tree inside the old one.
+    if [ -e "$DST/$ts" ]; then
+        echo "[$ts] snapshot already exists; skipping this run" >&2
+        return 0
+    fi
     for d in "$DST"/.incoming-*; do
         [ -e "$d" ] && rm -rf "$d"
     done
 
     # As uid 1000 rsync cannot chown, and the source is already ours.
     # The backup marker is this script's own output.
-    set -- -a --no-owner --no-group --delete \
+    set -- -a --no-owner --no-group --delete --chmod=Du+rwx \
+    # Du+rwx: a directory copied without owner access could never be pruned.
         --exclude=/.cubby/backup_status.ok --exclude=/.cubby/backup_status.err \
         --exclude=/.cubby/.backup_status.tmp
     if [ -d "$DST/latest" ]; then
@@ -93,8 +99,12 @@ snapshot() {
     for d in "$DST"/????-??-??T??????Z; do
         [ "$excess" -gt 0 ] || break
         [ -d "$d" ] || continue
-        rm -rf "$d"
-        echo "[$ts] pruned ${d##*/}"
+        # BusyBox rm -f fails silently on a directory it cannot enter.
+        if rm -rf "$d"; then
+            echo "[$ts] pruned ${d##*/}"
+        else
+            echo "[$ts] WARNING: could not prune ${d##*/}" >&2
+        fi
         excess=$((excess - 1))
     done
 }
