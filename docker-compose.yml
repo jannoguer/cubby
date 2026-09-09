@@ -12,8 +12,8 @@ services:
       - ./keys:/pubkeys:ro
     read_only: true
     tmpfs:
-      - /run
-      - /tmp
+      - /run:size=16m
+      - /tmp:size=64m
     cap_drop:
       - ALL
     cap_add:
@@ -69,7 +69,7 @@ services:
       - ./offsite:/offsite:ro
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=64m
     cap_drop:
       - ALL
     security_opt:
