@@ -145,7 +145,7 @@ sudo backup/restore.sh restore 2026-09-03T030000Z some/folder
 sudo backup/restore.sh restore -f latest some/file.txt  # -f replaces an existing path
 ```
 
-**Offsite mirror.** After every snapshot the whole `backups/` tree is mirrored with `rsync -aH --delete`, hardlinks intact. Set `BACKUP_REMOTE=user@host:/path` in `.env`, then:
+**Offsite copy.** Safest is to pull from another machine, so the server holds no credentials and a compromised server cannot erase the copy: `rsync -aH server:/path/backups/ backups/`. Alternatively the server mirrors `backups/` after every snapshot with `rsync -aH --delete`, hardlinks intact. It is a mirror: pruning and deletions propagate. Set `BACKUP_REMOTE=user@host:/path` in `.env`, then:
 
 ```bash
 ssh-keygen -t ed25519 -N "" -f offsite/id_ed25519
@@ -154,7 +154,7 @@ sudo chown -R 1000:1000 offsite
 docker compose up -d
 ```
 
-Install `offsite/id_ed25519.pub` on the remote. Failures appear as `offsite=rsync-N` in `status.ok` and are pushed through ntfy. To keep credentials off the server, pull from another machine instead: `rsync -aH server:/path/backups/ backups/`.
+Install `offsite/id_ed25519.pub` on the remote. Failures appear as `offsite=rsync-N` in `status.ok` and are pushed through ntfy.
 
 ## 6. Clients: add, revoke
 
