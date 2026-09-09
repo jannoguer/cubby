@@ -1,6 +1,6 @@
 #!/bin/sh
 # Hardlinked rsync snapshots of /shared in /backups; /backups/latest is the newest.
-# After every run a marker lands in /status (shared/.cubby) and syncs to the clients.
+# After every run a marker lands in /status (shared/.cubby/backup) and syncs to the clients.
 set -eu
 
 SRC=/shared
@@ -76,10 +76,8 @@ snapshot() {
 
     # As uid 1000 rsync cannot chown, and the source is already ours.
     # Du+rwx: a directory copied without owner access could never be pruned.
-    # The backup marker is this script's own output.
-    set -- -a --no-owner --no-group --delete --chmod=Du+rwx \
-        --exclude=/.cubby/backup_status.ok --exclude=/.cubby/backup_status.err \
-        --exclude=/.cubby/.backup_status.tmp
+    # /.cubby/backup is this script's own output.
+    set -- -a --no-owner --no-group --delete --chmod=Du+rwx --exclude=/.cubby/backup/
     if [ -d "$DST/latest" ]; then
         set -- "$@" --link-dest="$DST/latest"
     fi
@@ -123,18 +121,18 @@ snapshot() {
 
 # key=value like the client markers. The stale marker goes last, so exactly one
 # exists after each run. Never fatal: the snapshot itself succeeded or failed already.
-# A partial snapshot is still a snapshot: .ok with lastResult=partial and skipped=N.
+# A partial snapshot is still a snapshot: status.ok with lastResult=partial and skipped=N.
 failures=0
 write_status() {
     result=$1
     if [ "$result" = ok ] || [ "$result" = partial ]; then
-        marker=backup_status.ok; stale=backup_status.err
+        marker=status.ok; stale=status.err
     else
-        marker=backup_status.err; stale=backup_status.ok
+        marker=status.err; stale=status.ok
     fi
     latest=""
     [ -L "$DST/latest" ] && latest=$(readlink "$DST/latest")
-    tmp="$STATUS_DIR/.backup_status.tmp"
+    tmp="$STATUS_DIR/.status.tmp"
     if ! printf '%s\n' \
         "updatedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "lastSnapshot=$latest" \
@@ -144,7 +142,7 @@ write_status() {
         "keep=$KEEP" \
         "interval=$INTERVAL" \
         "consecutiveFailures=$failures" > "$tmp" || ! mv -f "$tmp" "$STATUS_DIR/$marker"; then
-        echo "WARNING: could not write $STATUS_DIR/$marker; shared/.cubby must be owned by uid 1000." >&2
+        echo "WARNING: could not write $STATUS_DIR/$marker; shared/.cubby/backup must be owned by uid 1000." >&2
         rm -f "$tmp"
         return 0
     fi

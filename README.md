@@ -23,7 +23,7 @@ docker compose logs cubby | grep 'Host key fingerprint'
 ```
 
 - `keys/`: one world-readable `.pub` per client. Changes apply live, no restart.
-- `shared/.cubby/`: `client/` (helpers, overwritten from the image at every start), `backup_status.ok|err` (written by the backup container), `local/` (each client's own markers, never synced).
+- `shared/.cubby/`: `client/` (helpers, overwritten from the image at every start), `backup/status.ok|err` (written by the backup container), `local/` (each client's own markers, never synced).
 - Files added to `shared/` from the host need `sudo chown -R 1000:1000 shared/<path>`.
 - Back up `config/`: it holds the host key.
 - Docker publishes past `ufw`. To bind elsewhere or tune backups, copy `.env.example` to `.env`.

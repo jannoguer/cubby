@@ -49,17 +49,18 @@ services:
     build: ./backup
     container_name: cubby-backup
     init: true
-    # The cubby entrypoint hands shared/.cubby to uid 1000 before the first marker write.
+    # Healthy means the cubby entrypoint has created and chowned shared/.cubby/backup.
     depends_on:
-      - cubby
+      cubby:
+        condition: service_healthy
     environment:
       BACKUP_INTERVAL: "${BACKUP_INTERVAL:-86400}"
       BACKUP_KEEP: "${BACKUP_KEEP:-14}"
     volumes:
       - ./shared:/shared:ro
       - ./backups:/backups
-      # Only the backup_status marker is written here; it syncs to every client.
-      - ./shared/.cubby:/status
+      # The only writable path into shared/: the status marker, synced to every client.
+      - ./shared/.cubby/backup:/status
     read_only: true
     tmpfs:
       - /tmp

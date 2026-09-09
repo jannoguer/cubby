@@ -14,8 +14,8 @@ Markers, each staged and swapped in so consumers never see a partial file:
                           none; left untouched when the session cannot be
                           queried, since the state is unknown.
 
-The status marker also summarizes the server's backup marker (.cubby/
-backup_status.ok or .err, synced from the server): backupStatus=
+The status marker also summarizes the server's backup marker (.cubby/backup/
+status.ok or .err, synced from the server): backupStatus=
 ok|partial|stale|failed|unknown, backupCount, backupLast, backupLastResult,
 backupSkipped and backupUpdatedAt. Partial means the last snapshot skipped
 backupSkipped unreadable paths (listed in the server log); stale means older
@@ -235,9 +235,9 @@ function ConvertTo-SingleLine([string]$Text) {
 # marker is unknown rather than an error of this probe.
 function Get-BackupSummary([string]$Dir) {
     $summary = @{ Status = 'unknown'; Count = ''; Last = ''; LastResult = ''; Skipped = ''; UpdatedAt = '' }
-    $markerDir = Join-Path $Dir '.cubby'
-    $err = Join-Path $markerDir 'backup_status.err'
-    $ok = Join-Path $markerDir 'backup_status.ok'
+    $markerDir = Join-Path (Join-Path $Dir '.cubby') 'backup'
+    $err = Join-Path $markerDir 'status.err'
+    $ok = Join-Path $markerDir 'status.ok'
     if (Test-Path -LiteralPath $err) { $file = $err; $summary.Status = 'failed' }
     elseif (Test-Path -LiteralPath $ok) { $file = $ok; $summary.Status = 'ok' }
     else { return $summary }

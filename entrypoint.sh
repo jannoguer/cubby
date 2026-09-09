@@ -41,14 +41,15 @@ chown syncuser:syncuser "$HOME_DIR"
 [ "$(stat -c %u /shared)" = "1000" ] || chown -R syncuser:syncuser /shared
 
 # A symlink planted by a client would send the root writes below elsewhere.
-for d in "$CUBBY_DIR" "$CUBBY_DIR/client"; do
+for d in "$CUBBY_DIR" "$CUBBY_DIR/client" "$CUBBY_DIR/backup"; do
     if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
         rm -f "$d"
     fi
 done
-mkdir -p "$CUBBY_DIR"
+mkdir -p "$CUBBY_DIR" "$CUBBY_DIR/backup"
 # Not recursive: the markers inside belong to whoever wrote them.
-chown syncuser:syncuser "$CUBBY_DIR"
+chown syncuser:syncuser "$CUBBY_DIR" "$CUBBY_DIR/backup"
+rm -f "$CUBBY_DIR"/backup_status.ok "$CUBBY_DIR"/backup_status.err # marker location before backup/
 # rsync rather than rm+cp: unchanged files stay untouched and the tree never
 # disappears, so clients have nothing spurious to sync. --delete stays inside client/.
 rsync -a --delete --chown=syncuser:syncuser /opt/cubby/client/ "$CUBBY_DIR/client/"
