@@ -39,6 +39,31 @@ end_sessions() {
     echo "Key revoked: $1, $ended session(s) ended." >&2
 }
 
+registered() {
+    for d in "$SESSIONS"/*/; do
+        [ -e "$d$1" ] && return 0
+    done
+    return 1
+}
+
+# The records are written by the clients themselves, so a hostile one can drop
+# its own or leave a daemon behind that outlives its connection: end every
+# syncuser process that does not descend from a session of a surviving key.
+kill_orphans() {
+    ended=0
+    for st in /proc/[0-9]*/status; do
+        grep -qsE '^Uid:\s+1000\s' "$st" || continue
+        pid=${st#/proc/}; pid=${pid%/status}
+        p=$pid
+        while [ -n "$p" ] && [ "$p" -gt 1 ] && ! registered "$p"; do
+            p=$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$p/status" 2>/dev/null)
+        done
+        if [ -z "$p" ] || [ "$p" -le 1 ]; then kill "$pid" 2>/dev/null && ended=$((ended + 1)); fi
+    done
+    [ "$ended" -eq 0 ] || echo "Ended $ended process(es) outside any surviving session." >&2
+}
+
+revoked=""
 if [ -f "$STATE" ]; then
     if [ -s "$STATE.new" ]; then
         revoked=$(grep -vxF -f "$STATE.new" "$STATE" | awk '{print $1}' | sort -u)
@@ -56,3 +81,5 @@ for p in "$SESSIONS"/*/*; do
     [ -e "$p" ] || continue
     is_session "${p##*/}" || rm -f "$p"
 done
+
+[ -z "$revoked" ] || kill_orphans
