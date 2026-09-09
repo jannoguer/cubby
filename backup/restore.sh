@@ -51,6 +51,7 @@ restore)
     [ -n "$snap" ] && [ -n "$p" ] || usage
     case "$snap" in */*|.|..) echo "ERROR: SNAPSHOT must be a snapshot name or 'latest'." >&2; exit 1 ;; esac
     check_path "$p"
+    case "$p" in .cubby|.cubby/*) echo "ERROR: .cubby is rebuilt by the server at start; restart the cubby container instead." >&2; exit 1 ;; esac
     [ "$(id -u)" = 0 ] || { echo "ERROR: run with sudo: the copy must be owned by uid 1000." >&2; exit 1; }
     dir=$(dirname "$p")
     [ "$dir" = . ] && dir=""

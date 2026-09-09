@@ -39,8 +39,10 @@ chmod 755 /config
 # The /config mount shadows the home adduser created in the image.
 mkdir -p "$HOME_DIR"
 chown syncuser:syncuser "$HOME_DIR"
-# Root only: a recursive chown of a large tree on every restart is too slow.
-[ "$(stat -c %u /shared)" = "1000" ] || chown -R syncuser:syncuser /shared
+# Sticky and root-owned: a client renames or deletes only what it owns, so .cubby stays put.
+chown root:root /shared
+chmod 1777 /shared
+find /shared -mindepth 1 -maxdepth 1 ! -name .cubby ! -user 1000 -exec chown -R syncuser:syncuser {} +
 
 # A symlink planted by a client would send the root writes below elsewhere.
 for d in "$CUBBY_DIR" "$CUBBY_DIR/client" "$CUBBY_DIR/backup"; do
@@ -65,9 +67,6 @@ if ! /usr/sbin/sshd -t; then
     echo "ERROR: sshd configuration is invalid (see above)." >&2
     exit 1
 fi
-
-mkdir -p /run/cubby-sessions
-chown syncuser:syncuser /run/cubby-sessions
 
 # Seed the served-key list, then cut a client whose key is deleted, moved out
 # or rewritten (see cubby-on-key-change). After a watcher restart the hook runs first, for keys removed in the gap.

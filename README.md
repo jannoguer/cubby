@@ -162,10 +162,10 @@ Install `offsite/id_ed25519.pub` on the remote. Failures appear as `offsite=rsyn
 
 Add: drop the device's `.pub` into `keys/`. The file name (letters, digits, `.` `_` `-`) is the client's name in the server log. No restart needed.
 
-Revoke: delete the file. That client's open sessions are cut within a second; the others are untouched.
+Revoke: delete the file. Every open session is cut within a second; the remaining clients reconnect on their own.
 
 ```bash
-docker compose logs -f cubby    # "Key revoked: work-laptop-2, 1 session(s) ended."
+docker compose logs -f cubby    # "Key revoked: work-laptop-2; ended 3 process(es), other clients reconnect."
 ```
 
 ## 7. Maintenance
@@ -195,7 +195,7 @@ Logs: `docker compose logs -f cubby` and `docker compose logs -f backup` on the 
 ```text
 config/            host key; back it up
 keys/              <device>.pub, served live
-shared/            the synced tree, owned by uid 1000
+shared/            the synced tree; contents owned by uid 1000
   .cubby/client/   helper scripts, refreshed from the image at every start
   .cubby/backup/   status.ok|err from the backup container, synced to every client
   .cubby/local/    this device's markers and logs, never synced
