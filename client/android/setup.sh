@@ -96,9 +96,10 @@ if [ -n "${CUBBY_HOST_FINGERPRINT-}" ]; then
     chmod 600 ~/.ssh/known_hosts
 fi
 # Interactive: ssh itself shows the fingerprint on first contact and asks on the
-# terminal; a known host connects silently. -T: stdin is the piped script.
+# terminal; a known host connects silently. -n: stdin is the piped script and
+# ssh would forward the rest of it to the remote command.
 echo "Compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs cubby'."
-ssh -T -o StrictHostKeyChecking=ask cubby true
+ssh -n -T -o StrictHostKeyChecking=ask cubby true
 
 echo "[8/9] Shared storage"
 if [ ! -L ~/storage/shared ]; then
