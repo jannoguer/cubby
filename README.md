@@ -124,7 +124,7 @@ Task Scheduler:  wscript.exe C:\path\to\.cubby\client\run-hidden.vbs powershell.
 - Server: backup failed, partial or recovered; offsite copy failed or recovered.
 - Each client running `watch.ps1`: sync unhealthy or healthy again, conflicts appearing or resolved, backups stale or running again. Messages carry the session and machine name.
 
-Override the topic on one client with the `CUBBY_NTFY_URL` environment variable.
+Clients trust the synced URL only when it is https on `ntfy.sh`. For a self-hosted ntfy, or to override the topic on one client, set the `CUBBY_NTFY_URL` environment variable.
 
 ## 5. Backups
 

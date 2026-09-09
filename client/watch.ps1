@@ -29,7 +29,9 @@ Notifications: when the server marker carries ntfyUrl (NTFY_URL in the server's
 .env) or CUBBY_NTFY_URL is set, changes since the previous run are pushed to that
 ntfy topic: sync unhealthy or healthy again, conflicts appearing or resolved,
 backups stale or running again. Backup failures are pushed by the server itself.
-Nothing is sent without a URL or on the first run.
+Nothing is sent without a URL or on the first run. The marker is a synced file
+any client can rewrite, so its URL is used only when it is https on ntfy.sh;
+CUBBY_NTFY_URL is trusted as given.
 
 The markers stay on this device: create the session with --ignore=/.cubby/local.
 The script reads the session's ignore list and writes nothing when that path is
@@ -306,10 +308,15 @@ function Send-Notification([string]$Dir, [string]$Url, [string]$Priority, [strin
     }
 }
 
+function Test-TrustedNtfyUrl([string]$Url) {
+    $uri = $null
+    return [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -eq 'https' -and $uri.Host -eq 'ntfy.sh'
+}
+
 # Edge-triggered against the previous marker. Conflicts -1 = unknown this run.
 function Send-TransitionNotification([string]$Dir, [hashtable]$Previous, [bool]$Healthy, [string]$Detail, [int]$Conflicts, [hashtable]$Backup) {
     $url = $env:CUBBY_NTFY_URL
-    if ([string]::IsNullOrWhiteSpace($url)) { $url = $Backup.NtfyUrl }
+    if ([string]::IsNullOrWhiteSpace($url) -and (Test-TrustedNtfyUrl $Backup.NtfyUrl)) { $url = $Backup.NtfyUrl }
     if ([string]::IsNullOrWhiteSpace($url) -or $null -eq $Previous) { return }
     $tag = "$SessionName on $([Environment]::MachineName)"
 
