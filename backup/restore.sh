@@ -13,14 +13,17 @@ usage() {
 
 [ -d shared ] && [ -d backups ] || { echo "ERROR: run from the directory holding shared/ and backups/." >&2; exit 1; }
 
+# A trailing slash or '.' makes cp, rm and stat follow a symlink at the leaf.
 check_path() {
     case "$1" in
-        ''|/*|.|..|../*|*/..|*/../*) echo "ERROR: PATH must be relative to shared/, without '..'." >&2; exit 1 ;;
+        ''|/*|.|..|./*|../*|*/.|*/..|*/./*|*/../*|*/) echo "ERROR: PATH must be relative to shared/, without '.' or '..' components or a trailing slash." >&2; exit 1 ;;
     esac
 }
 
-# A symlink planted by a client in place of a directory would send the root
-# writes below anywhere on the host. Fails on any symlinked component of DIR under BASE.
+# A symlink planted by a client anywhere on the path, leaf included, would send
+# the root reads and writes below anywhere on the host. Fails on any symlinked
+# component of PATH under BASE. This also refuses to restore a path that is
+# itself a symlink in the snapshot or in shared/; recreate such a link by hand.
 check_dirs() {
     base=$1
     set -f; IFS=/
@@ -71,8 +74,8 @@ restore)
     else
         echo "WARNING: docker not found; the sync stays live during the restore." >&2
     fi
-    check_dirs "backups/$snap" "$dir"
-    check_dirs shared "$dir"
+    check_dirs "backups/$snap" "$p"
+    check_dirs shared "$p"
     src="backups/$snap/$p"
     [ -e "$src" ] || { echo "ERROR: $src does not exist." >&2; exit 1; }
     if [ -e "shared/$p" ] && [ "$force" -eq 0 ]; then
