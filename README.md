@@ -106,7 +106,7 @@ journalctl --user -u mutagen -f # logs
 
 ## 4. Health and notifications
 
-`watch.ps1` checks the session once and writes into `.cubby/local/`: `status.ok` or `status.err` (sync health plus the server's backup summary), `conflicts.json` when there are conflicts, and a line in `logs/watch.log`. Exit code 0 means healthy.
+`watch.ps1` checks the session once and writes into `.cubby/local/`: `status.ok` or `status.err` (sync health plus the server's backup summary), `conflicts.json` when there are conflicts, and a line in `logs/watch.log`. Exit code 0 means healthy, 2 unhealthy, 1 nothing written.
 
 ```bash
 pwsh -NoProfile -File .cubby/client/watch.ps1 Cubby

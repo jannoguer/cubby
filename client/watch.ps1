@@ -53,8 +53,7 @@ or CUBBY_MUTAGEN_DATA_DIR where the scheduler cannot set it.
 pwsh -NoProfile -File watch.ps1 Cubby
 
 .NOTES
-Exit codes: 0 = markers written; 1 = anything else (status.err is still written
-when the directory is known from a previous run).
+Exit codes: 0 = status.ok written; 2 = status.err written; 1 = no marker written.
 
 Scheduling:
   cron:           * * * * * pwsh -NoProfile -File /path/to/.cubby/client/watch.ps1 Cubby
@@ -460,10 +459,9 @@ try {
             $summary = "[$now] status.err lastError=$(ConvertTo-SingleLine $result.Error) backups=$($backup.Status)"
             Write-RunLog $dir $summary
             Write-Output $summary
+            exit 2
         }
-        else {
-            Write-Warning "[$now] synced directory unknown; no marker written"
-        }
+        Write-Warning "[$now] synced directory unknown; no marker written"
         exit 1
     }
 
@@ -535,7 +533,7 @@ try {
     $summary = "[$now] $marker status=$status conflicts=$($conflicts.Count) problems=$problems lastError=$lastError backups=$($backup.Status) count=$($backup.Count) last=$($backup.Last)"
     Write-RunLog $dir $summary
     Write-Output $summary
-    exit 0
+    exit $(if ($healthy) { 0 } else { 2 })
 }
 finally {
     if ($acquired) { $mutex.ReleaseMutex() }
