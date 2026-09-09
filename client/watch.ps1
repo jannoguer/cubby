@@ -17,9 +17,9 @@ Markers, each staged and swapped in so consumers never see a partial file:
 The status marker also summarizes the server's backup marker (.cubby/backup/
 status.ok or .err, synced from the server): backupStatus=
 ok|partial|stale|failed|unknown, backupCount, backupLast, backupLastResult,
-backupSkipped and backupUpdatedAt. Partial means the last snapshot skipped
-backupSkipped unreadable paths (listed in the server log); stale means older
-than twice the backup interval. Backups never change healthy=.
+backupSkipped, backupUpdatedAt and backupOffsite (off|ok|rsync-N). Partial means
+the last snapshot skipped backupSkipped unreadable paths (listed in the server
+log); stale means older than twice the backup interval. Backups never change healthy=.
 
 The local directory is cached so status.err can still be written when the
 daemon is unreachable. Each run appends its summary line to
@@ -216,7 +216,7 @@ function ConvertTo-SingleLine([string]$Text) {
 # Reads the server's marker; .err wins over .ok, and a missing or malformed
 # marker is unknown rather than an error of this probe.
 function Get-BackupSummary([string]$Dir) {
-    $summary = @{ Status = 'unknown'; Count = ''; Last = ''; LastResult = ''; Skipped = ''; UpdatedAt = ''; NtfyUrl = '' }
+    $summary = @{ Status = 'unknown'; Count = ''; Last = ''; LastResult = ''; Skipped = ''; UpdatedAt = ''; NtfyUrl = ''; Offsite = '' }
     $markerDir = Join-Path (Join-Path $Dir '.cubby') 'backup'
     $err = Join-Path $markerDir 'status.err'
     $ok = Join-Path $markerDir 'status.ok'
@@ -235,6 +235,7 @@ function Get-BackupSummary([string]$Dir) {
     $summary.Skipped = "$($fields['skipped'])"
     $summary.UpdatedAt = "$($fields['updatedAt'])"
     $summary.NtfyUrl = "$($fields['ntfyUrl'])"
+    $summary.Offsite = "$($fields['offsite'])"
     if ($summary.Status -ne 'ok') { return $summary }
 
     $updated = [DateTime]::MinValue
@@ -335,6 +336,7 @@ function Format-BackupSummary([hashtable]$Backup) {
         "backupLastResult=$($Backup.LastResult)"
         "backupSkipped=$($Backup.Skipped)"
         "backupUpdatedAt=$($Backup.UpdatedAt)"
+        "backupOffsite=$($Backup.Offsite)"
     )
 }
 

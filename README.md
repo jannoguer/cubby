@@ -15,7 +15,7 @@ Prebuilt binaries: [releases page](https://github.com/mutagen-io/mutagen/release
 
 Clone the repo, open TCP `2222`, then:
 ```bash
-mkdir -p config shared keys backups
+mkdir -p config shared keys backups offsite
 sudo chown 1000:1000 backups
 echo "PASTE_YOUR_CLIENT_PUB_KEY" > keys/laptop.pub
 docker compose up --build -d
@@ -77,6 +77,14 @@ backup/restore.sh list some/folder
 sudo backup/restore.sh restore 2026-09-03T030000Z some/folder
 ```
 `latest` works as a snapshot name; `-f` replaces an existing path.
+
+Offsite mirror after every snapshot: set `BACKUP_REMOTE=user@host:/path` (and `BACKUP_REMOTE_PORT`) in `.env`, then:
+```bash
+ssh-keygen -t ed25519 -N "" -f offsite/id_ed25519
+ssh-keyscan -p 22 host > offsite/known_hosts
+sudo chown -R 1000:1000 offsite
+```
+Install `offsite/id_ed25519.pub` on the remote. Failures show as `offsite=rsync-N` in `status.ok` and are pushed. Pulling instead keeps credentials off the server: `rsync -aH server:/path/backups/ backups/`.
 
 ## Maintenance
 

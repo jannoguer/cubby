@@ -11,6 +11,8 @@ KEEP_HOURLY=${BACKUP_KEEP_HOURLY:-24}
 KEEP_DAILY=${BACKUP_KEEP_DAILY:-14}
 KEEP_WEEKLY=${BACKUP_KEEP_WEEKLY:-8}
 NTFY_URL=${NTFY_URL:-}
+REMOTE=${BACKUP_REMOTE:-}
+REMOTE_PORT=${BACKUP_REMOTE_PORT:-22}
 
 case "$INTERVAL" in
     ''|*[!0-9]*) echo "ERROR: BACKUP_INTERVAL must be a whole number of seconds, got '$INTERVAL'." >&2; exit 1 ;;
@@ -21,6 +23,13 @@ esac
 case "$KEEP_DAILY$KEEP_WEEKLY" in
     ''|*[!0-9]*) echo "ERROR: BACKUP_KEEP_DAILY and BACKUP_KEEP_WEEKLY must be whole numbers, got '$KEEP_DAILY' and '$KEEP_WEEKLY'." >&2; exit 1 ;;
 esac
+case "$REMOTE_PORT" in
+    ''|*[!0-9]*) echo "ERROR: BACKUP_REMOTE_PORT must be a whole number, got '$REMOTE_PORT'." >&2; exit 1 ;;
+esac
+if [ -n "$REMOTE" ] && [ ! -r /offsite/id_ed25519 ]; then
+    echo "ERROR: BACKUP_REMOTE is set but /offsite/id_ed25519 is missing or not readable by uid 1000." >&2
+    exit 1
+fi
 if [ ! -w "$DST" ]; then
     echo "ERROR: $DST is not writable by uid $(id -u); run 'chown 1000:1000 backups' on the host." >&2
     exit 1
@@ -167,6 +176,7 @@ write_status() {
         "keepWeekly=$KEEP_WEEKLY" \
         "interval=$INTERVAL" \
         "ntfyUrl=$NTFY_URL" \
+        "offsite=$offsite_result" \
         "consecutiveFailures=$failures" > "$tmp" || ! mv -f "$tmp" "$STATUS_DIR/$marker"; then
         echo "WARNING: could not write $STATUS_DIR/$marker; shared/.cubby/backup must be owned by uid 1000." >&2
         rm -f "$tmp"
@@ -182,8 +192,27 @@ notify() {
         || echo "WARNING: could not notify $NTFY_URL" >&2
 }
 
+# The whole tree in one run so hardlinks survive; --delete mirrors pruning.
+offsite_result=off
+push_offsite() {
+    [ -n "$REMOTE" ] || return 0
+    rc=0
+    rsync -aH --delete --exclude='/.incoming-*' \
+        -e "ssh -p $REMOTE_PORT -i /offsite/id_ed25519 -o UserKnownHostsFile=/offsite/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30" \
+        "$DST/" "$REMOTE/" 2> "$RSYNC_ERR" || rc=$?
+    sed 's/^/[offsite] /' "$RSYNC_ERR" >&2
+    if [ "$rc" -eq 0 ]; then
+        offsite_result=ok
+        echo "[$ts] offsite copy done"
+    else
+        offsite_result="rsync-$rc"
+        echo "[$ts] WARNING: offsite copy failed with rsync exit $rc" >&2
+    fi
+}
+
 # Only on change; a fresh start counts as coming from ok, so an ongoing failure is reported once.
 last=""
+offsite_last=""
 while :; do
     if snapshot; then
         failures=0
@@ -192,6 +221,7 @@ while :; do
         failures=$((failures + 1))
         result="rsync-$snapshot_rc"
     fi
+    push_offsite
     write_status "$result"
     if [ "$result" != "${last:-ok}" ]; then
         case "$result" in
@@ -201,5 +231,12 @@ while :; do
         esac
     fi
     last=$result
+    if [ "$offsite_result" != off ] && [ "$offsite_result" != "${offsite_last:-ok}" ]; then
+        case "$offsite_result" in
+            ok) notify default "Offsite copy recovered." ;;
+            *) notify high "Offsite copy failed: rsync exit ${offsite_result#rsync-}; see the cubby-backup log." ;;
+        esac
+    fi
+    offsite_last=$offsite_result
     sleep "$INTERVAL"
 done

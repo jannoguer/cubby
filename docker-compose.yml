@@ -59,11 +59,14 @@ services:
       BACKUP_KEEP_DAILY: "${BACKUP_KEEP_DAILY:-14}"
       BACKUP_KEEP_WEEKLY: "${BACKUP_KEEP_WEEKLY:-8}"
       NTFY_URL: "${NTFY_URL:-}"
+      BACKUP_REMOTE: "${BACKUP_REMOTE:-}"
+      BACKUP_REMOTE_PORT: "${BACKUP_REMOTE_PORT:-22}"
     volumes:
       - ./shared:/shared:ro
       - ./backups:/backups
       # The only writable path into shared/: the status marker, synced to every client.
       - ./shared/.cubby/backup:/status
+      - ./offsite:/offsite:ro
     read_only: true
     tmpfs:
       - /tmp
