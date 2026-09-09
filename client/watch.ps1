@@ -223,9 +223,10 @@ function Get-CachePath {
     return Join-Path $cacheDir "$(Get-SessionSlug $SessionName).dir"
 }
 
-# A newline inside a value would inject extra key=value lines.
+# A line break inside a value would inject extra key=value lines; Mutagen's
+# progress output carries bare carriage returns.
 function ConvertTo-SingleLine([string]$Text) {
-    return ($Text -replace "\r?\n", ' ')
+    return ($Text -replace "[\r\n]+", ' ')
 }
 
 # Reads the server's marker; .err wins over .ok, and a missing or malformed
