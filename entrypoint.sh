@@ -12,20 +12,24 @@ chmod 644 "$KEYDIR"/*_key.pub 2>/dev/null || true
 echo "Host key fingerprint: $(ssh-keygen -lf "$KEYDIR/ssh_host_ed25519_key.pub")"
 
 # Report only: sshd reads /pubkeys live through cubby-authorized-keys at every
-# login. Run the same command as the same user, so what prints is what logs in.
-served=$(su -s /bin/sh nobody -c '/usr/local/bin/cubby-authorized-keys syncuser')
-if [ -n "$served" ]; then
-    echo "Authorized keys:"
-    printf '%s\n' "$served" | ssh-keygen -lf - | sed 's/^/  /'
-else
-    echo "WARNING: no usable public keys in /pubkeys; add a world-readable .pub file to keys/, no restart needed." >&2
-fi
-# Same test as cubby-authorized-keys, as the same user; -s runs the program directly.
+# login. Same test as that command, as the same user (-s runs the program directly).
+served=0
 for f in /pubkeys/*.pub; do
     [ -e "$f" ] || continue
-    su -s /usr/bin/ssh-keygen nobody -- -lf "$f" > /dev/null 2>&1 \
-        || echo "WARNING: $f is not served: malformed, or not readable by nobody (chmod 644 on the host)." >&2
+    name=${f##*/}; name=${name%.pub}
+    case "$name" in *[!A-Za-z0-9._-]*)
+        echo "WARNING: $f is not served: the name may only contain letters, digits, . _ and -." >&2
+        continue ;;
+    esac
+    if fp=$(su -s /usr/bin/ssh-keygen nobody -- -lf "$f" 2>/dev/null); then
+        [ "$served" -eq 0 ] && echo "Authorized keys:"
+        served=$((served + 1))
+        echo "  $name: $fp"
+    else
+        echo "WARNING: $f is not served: malformed, or not readable by nobody (chmod 644 on the host)." >&2
+    fi
 done
+[ "$served" -gt 0 ] || echo "WARNING: no usable public keys in /pubkeys; add a world-readable .pub file to keys/, no restart needed." >&2
 
 mkdir -p /shared
 
@@ -55,8 +59,11 @@ if ! /usr/sbin/sshd -t; then
     exit 1
 fi
 
-# Seed the served-key list, then cut open sessions when a key is deleted,
-# moved out or rewritten (see cubby-on-key-change).
+mkdir -p /run/cubby-sessions
+chown syncuser:syncuser /run/cubby-sessions
+
+# Seed the served-key list, then cut a client whose key is deleted, moved out
+# or rewritten (see cubby-on-key-change).
 /usr/local/bin/cubby-on-key-change
 inotifyd /usr/local/bin/cubby-on-key-change /pubkeys:dmwy &
 

@@ -1,6 +1,6 @@
 FROM alpine:3.24
 
-RUN apk add --no-cache openssh-server openssh-keygen rsync
+RUN apk add --no-cache openssh-server openssh-sftp-server openssh-keygen rsync
 
 # sshd keeps the first value seen per keyword and the stock file sets some of
 # these, so only the Include placed ahead of them can override.
@@ -36,8 +36,9 @@ COPY client/ /opt/cubby/client/
 # sshd refuses an AuthorizedKeysCommand that is not root-owned and unwritable by others.
 COPY authorized-keys.sh /usr/local/bin/cubby-authorized-keys
 COPY on-key-change.sh /usr/local/bin/cubby-on-key-change
+COPY session.sh /usr/local/bin/cubby-session
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod 755 /usr/local/bin/cubby-authorized-keys /usr/local/bin/cubby-on-key-change /entrypoint.sh
+RUN chmod 755 /usr/local/bin/cubby-authorized-keys /usr/local/bin/cubby-on-key-change /usr/local/bin/cubby-session /entrypoint.sh
 
 EXPOSE 22
 

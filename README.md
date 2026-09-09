@@ -80,6 +80,6 @@ Update:
 git pull
 docker compose up --build -d
 ```
-Add a client: drop its `.pub` into `keys/`. Revoke: delete it; its open session is cut within a second and the other clients reconnect.
+Add a client: drop its `.pub` into `keys/`; the file name (letters, digits, `.` `_` `-`) is the client's name in the logs. Revoke: delete it; its open session is cut within a second, the other clients are untouched.
 
 Rotate the host key: stop the stack, delete `config/ssh_host_keys/`, start it and note the new fingerprint. On every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
