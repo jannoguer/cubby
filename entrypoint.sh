@@ -12,8 +12,10 @@ chmod 644 "$KEYDIR"/*_key.pub 2>/dev/null || true
 echo "Host key fingerprint: $(ssh-keygen -lf "$KEYDIR/ssh_host_ed25519_key.pub")"
 
 # Report only: sshd reads /pubkeys live through cubby-authorized-keys at every
-# login. Same test as that command, as the same user (-s runs the program directly).
-served=0
+# login. Ask that command, as the same user, which keys it actually serves.
+served=$(su -s /bin/sh nobody -c '/usr/local/bin/cubby-authorized-keys syncuser' \
+    | sed -n 's/^command="[^ ]* \([^"]*\)".*/\1/p' | sort -u)
+count=0
 for f in /pubkeys/*.pub; do
     [ -e "$f" ] || continue
     name=${f##*/}; name=${name%.pub}
@@ -21,15 +23,15 @@ for f in /pubkeys/*.pub; do
         echo "WARNING: $f is not served: the name may only contain letters, digits, . _ and -." >&2
         continue ;;
     esac
-    if fp=$(su -s /usr/bin/ssh-keygen nobody -- -lf "$f" 2>/dev/null); then
-        [ "$served" -eq 0 ] && echo "Authorized keys:"
-        served=$((served + 1))
-        echo "  $name: $fp"
+    if printf '%s\n' "$served" | grep -qxF "$name"; then
+        [ "$count" -eq 0 ] && echo "Authorized keys:"
+        count=$((count + 1))
+        echo "  $name: $(ssh-keygen -lf "$f")"
     else
-        echo "WARNING: $f is not served: malformed, or not readable by nobody (chmod 644 on the host)." >&2
+        echo "WARNING: $f is not served: malformed, carries key options, or not readable by nobody (chmod 644 on the host)." >&2
     fi
 done
-[ "$served" -gt 0 ] || echo "WARNING: no usable public keys in /pubkeys; add a world-readable .pub file to keys/, no restart needed." >&2
+[ "$count" -gt 0 ] || echo "WARNING: no usable public keys in /pubkeys; add a world-readable .pub file to keys/, no restart needed." >&2
 
 mkdir -p /shared
 
@@ -47,12 +49,16 @@ for d in "$CUBBY_DIR" "$CUBBY_DIR/client" "$CUBBY_DIR/backup"; do
     fi
 done
 mkdir -p "$CUBBY_DIR" "$CUBBY_DIR/backup"
-# Not recursive: the markers inside belong to whoever wrote them.
-chown syncuser:syncuser "$CUBBY_DIR" "$CUBBY_DIR/backup"
+# .cubby and client/ stay root-owned: clients run these scripts, so no client
+# key may alter them or swap the directories for symlinks. backup/ is written
+# by the backup container as uid 1000.
+chown root:root "$CUBBY_DIR"
+chmod 755 "$CUBBY_DIR"
+chown syncuser:syncuser "$CUBBY_DIR/backup"
 rm -f "$CUBBY_DIR"/backup_status.ok "$CUBBY_DIR"/backup_status.err # marker location before backup/
 # rsync rather than rm+cp: unchanged files stay untouched and the tree never
 # disappears, so clients have nothing spurious to sync. --delete stays inside client/.
-rsync -a --delete --chown=syncuser:syncuser /opt/cubby/client/ "$CUBBY_DIR/client/"
+rsync -a --delete --chown=root:root --chmod=D755,F644 /opt/cubby/client/ "$CUBBY_DIR/client/"
 
 # Fail once with the reason instead of restart-looping.
 if ! /usr/sbin/sshd -t; then

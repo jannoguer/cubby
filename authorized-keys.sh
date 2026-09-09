@@ -11,7 +11,12 @@ for f in /pubkeys/*.pub; do
     name=${f##*/}; name=${name%.pub}
     # The name lands unquoted inside command="..."; the entrypoint reports rejects.
     case "$name" in *[!A-Za-z0-9._-]*) continue ;; esac
-    ssh-keygen -lf "$f" > /dev/null 2>&1 || continue
-    tr -d '\r' < "$f" | awk -v n="$name" 'NF { print "command=\"/usr/local/bin/cubby-session " n "\" " $0 }'
+    tr -d '\r' < "$f" | while IFS= read -r key || [ -n "$key" ]; do
+        [ -n "$key" ] || continue
+        line="command=\"/usr/local/bin/cubby-session $name\" $key"
+        # Checked as served: a .pub that carries its own options would pass on
+        # its own but sshd rejects the combined line.
+        printf '%s\n' "$line" | ssh-keygen -lf - > /dev/null 2>&1 && printf '%s\n' "$line"
+    done
 done
 exit 0
