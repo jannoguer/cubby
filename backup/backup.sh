@@ -170,7 +170,17 @@ write_status() {
     fi
     latest=""
     [ -L "$DST/latest" ] && latest=$(readlink "$DST/latest")
-    tmp="$STATUS_DIR/.status.tmp"
+    # Clients can write into this directory. A symlink or FIFO planted under a
+    # predictable name would be followed or block the write below, and a
+    # directory named like a marker would block the rename. Only the two
+    # markers belong here; stale temp files from an interrupted run go too.
+    find "$STATUS_DIR" -mindepth 1 -maxdepth 1 \( ! -type f -o -name '.status.*' \) -exec rm -rf {} + \
+        || echo "WARNING: could not clean $STATUS_DIR" >&2
+    # Random name, created O_EXCL: nothing a client planted is ever opened.
+    if ! tmp=$(mktemp "$STATUS_DIR/.status.XXXXXX"); then
+        echo "WARNING: could not create a temp file in $STATUS_DIR; shared/.cubby/backup must be owned by uid 1000." >&2
+        return 0
+    fi
     if ! printf '%s\n' \
         "updatedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "lastSnapshot=$latest" \
