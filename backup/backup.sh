@@ -106,6 +106,7 @@ snapshot_skipped=0
 RSYNC_ERR=/tmp/rsync-errors
 snapshot() {
     ts=$(date -u +%Y-%m-%dT%H%M%SZ)
+    snapshot_skipped=0
     incoming="$DST/.incoming-$ts"
     # A restart right after a run: mv would nest the new tree inside the old one.
     if [ -e "$DST/$ts" ]; then
@@ -128,7 +129,6 @@ snapshot() {
     rc=0
     rsync "$@" "$SRC/" "$incoming/" 2> "$RSYNC_ERR" || rc=$?
     cat "$RSYNC_ERR" >&2
-    snapshot_skipped=0
     case "$rc" in
         # 24: files vanished mid-copy, expected on a live sync root.
         0|24) ;;
