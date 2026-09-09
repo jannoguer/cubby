@@ -54,8 +54,10 @@ services:
       cubby:
         condition: service_healthy
     environment:
-      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-86400}"
-      BACKUP_KEEP: "${BACKUP_KEEP:-14}"
+      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-3600}"
+      BACKUP_KEEP_HOURLY: "${BACKUP_KEEP_HOURLY:-24}"
+      BACKUP_KEEP_DAILY: "${BACKUP_KEEP_DAILY:-14}"
+      BACKUP_KEEP_WEEKLY: "${BACKUP_KEEP_WEEKLY:-8}"
     volumes:
       - ./shared:/shared:ro
       - ./backups:/backups
