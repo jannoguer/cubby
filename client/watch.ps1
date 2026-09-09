@@ -8,8 +8,8 @@ under the session's local directory. Schedule it with cron or Task Scheduler.
 Markers, each staged and swapped in so consumers never see a partial file:
   status.ok | status.err  sync health as key=value lines; exactly one exists
                           after each run. Healthy means: not paused, no error,
-                          both endpoints connected, status is a normal syncing
-                          state.
+                          both endpoints connected, no per-file problems
+                          (problems=0), status is a normal syncing state.
   conflicts.json          Mutagen's raw conflict array. Removed when there are
                           none; left untouched when the session cannot be
                           queried, since the state is unknown.
@@ -161,6 +161,20 @@ function Get-SessionState {
         return @{ Ok = $false; Error = "'$SessionName' matched $($sessions.Count) sessions, expected exactly 1" }
     }
     return @{ Ok = $true; Session = $sessions[0] }
+}
+
+# Files Mutagen cannot scan or write (permissions, names invalid on one side)
+# are reported per endpoint while the session status stays normal.
+function Get-ProblemCount($Session) {
+    $n = 0
+    foreach ($endpoint in @($Session.alpha, $Session.beta)) {
+        if ($null -eq $endpoint) { continue }
+        $n += @($endpoint.scanProblems | Where-Object { $null -ne $_ }).Count
+        $n += @($endpoint.transitionProblems | Where-Object { $null -ne $_ }).Count
+        $n += [int]($endpoint.excludedScanProblems + 0)
+        $n += [int]($endpoint.excludedTransitionProblems + 0)
+    }
+    return $n
 }
 
 function Resolve-MappedDir($Session) {
@@ -482,12 +496,14 @@ try {
     $alphaConnected = ($session.alpha.connected -eq $true)
     $betaConnected = ($session.beta.connected -eq $true)
     $conflicts = @($session.conflicts | Where-Object { $null -ne $_ })
+    $problems = Get-ProblemCount $session
 
     $healthy = ($OkStatuses -contains $status) -and
     (-not $paused) -and
     ($lastError -eq '') -and
     $alphaConnected -and
-    $betaConnected
+    $betaConnected -and
+    ($problems -eq 0)
 
     $backup = Get-BackupSummary $dir
     $previous = Read-PreviousMarker $dir
@@ -500,10 +516,11 @@ try {
         "alphaConnected=$(if ($alphaConnected) { 'true' } else { 'false' })"
         "betaConnected=$(if ($betaConnected) { 'true' } else { 'false' })"
         "conflicts=$($conflicts.Count)"
+        "problems=$problems"
         "lastError=$lastError"
     ) + (Format-BackupSummary $backup)
     Write-StatusMarker -Dir $dir -Healthy $healthy -Lines $lines
-    $detail = "status=$status paused=$paused alpha=$alphaConnected beta=$betaConnected lastError=$lastError"
+    $detail = "status=$status paused=$paused alpha=$alphaConnected beta=$betaConnected problems=$problems lastError=$lastError"
     Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $healthy -Detail $detail -Conflicts $conflicts.Count -Backup $backup
 
     try {
@@ -515,7 +532,7 @@ try {
     }
 
     $marker = if ($healthy) { 'status.ok' } else { 'status.err' }
-    $summary = "[$now] $marker status=$status conflicts=$($conflicts.Count) lastError=$lastError backups=$($backup.Status) count=$($backup.Count) last=$($backup.Last)"
+    $summary = "[$now] $marker status=$status conflicts=$($conflicts.Count) problems=$problems lastError=$lastError backups=$($backup.Status) count=$($backup.Count) last=$($backup.Last)"
     Write-RunLog $dir $summary
     Write-Output $summary
     exit 0
