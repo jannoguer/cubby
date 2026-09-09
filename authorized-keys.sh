@@ -9,8 +9,8 @@ set -u
 for f in /pubkeys/*.pub; do
     [ -f "$f" ] || continue
     name=${f##*/}; name=${name%.pub}
-    # The name lands unquoted inside command="..."; the entrypoint reports rejects.
-    case "$name" in *[!A-Za-z0-9._-]*) continue ;; esac
+    # Unquoted inside command="..." and a directory name under /run; the entrypoint reports rejects.
+    case "$name" in ''|.|..|*[!A-Za-z0-9._-]*) continue ;; esac
     tr -d '\r' < "$f" | while IFS= read -r key || [ -n "$key" ]; do
         [ -n "$key" ] || continue
         line="command=\"/usr/local/bin/cubby-session $name\" $key"

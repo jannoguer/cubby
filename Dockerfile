@@ -16,6 +16,7 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'AllowAgentForwarding no' \
     'X11Forwarding no' \
     'PermitTunnel no' \
+    'PermitUserRC no' \
     'AuthorizedKeysFile none' \
     'AuthorizedKeysCommand /usr/local/bin/cubby-authorized-keys %u' \
     'AuthorizedKeysCommandUser nobody' \

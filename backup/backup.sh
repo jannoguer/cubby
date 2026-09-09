@@ -17,6 +17,7 @@ REMOTE_PORT=${BACKUP_REMOTE_PORT:-22}
 case "$INTERVAL" in
     ''|*[!0-9]*) echo "ERROR: BACKUP_INTERVAL must be a whole number of seconds, got '$INTERVAL'." >&2; exit 1 ;;
 esac
+[ "$INTERVAL" -ge 1 ] || { echo "ERROR: BACKUP_INTERVAL must be at least 1 second, got '$INTERVAL'." >&2; exit 1; }
 case "$KEEP_HOURLY" in
     ''|*[!0-9]*|0) echo "ERROR: BACKUP_KEEP_HOURLY must be a whole number of at least 1, got '$KEEP_HOURLY'." >&2; exit 1 ;;
 esac
@@ -101,7 +102,7 @@ prune() {
     done
 }
 
-snapshot_rc=0
+snapshot_fail=""
 snapshot_skipped=0
 RSYNC_ERR=/tmp/rsync-errors
 snapshot() {
@@ -140,11 +141,16 @@ snapshot() {
         *)
             echo "[$ts] WARNING: rsync exited with code $rc; snapshot discarded" >&2
             rm -rf "$incoming"
-            snapshot_rc=$rc
+            snapshot_fail="rsync-$rc"
             return 1
             ;;
     esac
-    mv "$incoming" "$DST/$ts"
+    if ! mv "$incoming" "$DST/$ts"; then
+        echo "[$ts] WARNING: could not move the finished snapshot into place; snapshot discarded" >&2
+        rm -rf "$incoming"
+        snapshot_fail="mv"
+        return 1
+    fi
     # Relative target so the link also resolves on the host.
     ln -sfn "$ts" "$DST/latest"
     echo "[$ts] snapshot written"
@@ -197,7 +203,7 @@ offsite_result=off
 push_offsite() {
     [ -n "$REMOTE" ] || return 0
     rc=0
-    rsync -aH --delete --exclude='/.incoming-*' \
+    rsync -aH --delete --exclude='/.incoming-*' --exclude='/.restore-*' \
         -e "ssh -p $REMOTE_PORT -i /offsite/id_ed25519 -o UserKnownHostsFile=/offsite/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30" \
         "$DST/" "$REMOTE/" 2> "$RSYNC_ERR" || rc=$?
     sed 's/^/[offsite] /' "$RSYNC_ERR" >&2
@@ -214,12 +220,13 @@ push_offsite() {
 last=""
 offsite_last=""
 while :; do
+    run_start=$(date +%s)
     if snapshot; then
         failures=0
         if [ "$snapshot_skipped" -eq 0 ]; then result=ok; else result=partial; fi
     else
         failures=$((failures + 1))
-        result="rsync-$snapshot_rc"
+        result=$snapshot_fail
     fi
     push_offsite
     write_status "$result"
@@ -227,7 +234,7 @@ while :; do
         case "$result" in
             ok) notify default "Backups recovered: snapshot $(readlink "$DST/latest") written." ;;
             partial) notify high "Backup partial: $snapshot_skipped unreadable path(s) skipped; see the cubby-backup log." ;;
-            *) notify high "Backup failed: rsync exit ${result#rsync-}, no snapshot written ($failures in a row)." ;;
+            *) notify high "Backup failed ($result), no snapshot written; see the cubby-backup log." ;;
         esac
     fi
     last=$result
@@ -238,5 +245,7 @@ while :; do
         esac
     fi
     offsite_last=$offsite_result
-    sleep "$INTERVAL"
+    wait=$((INTERVAL - ($(date +%s) - run_start)))
+    [ "$wait" -ge 1 ] || wait=1
+    sleep "$wait"
 done

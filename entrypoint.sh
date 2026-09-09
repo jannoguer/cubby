@@ -19,8 +19,8 @@ count=0
 for f in /pubkeys/*.pub; do
     [ -e "$f" ] || continue
     name=${f##*/}; name=${name%.pub}
-    case "$name" in *[!A-Za-z0-9._-]*)
-        echo "WARNING: $f is not served: the name may only contain letters, digits, . _ and -." >&2
+    case "$name" in ''|.|..|*[!A-Za-z0-9._-]*)
+        echo "WARNING: $f is not served: the name may only contain letters, digits, . _ and -, and may not be empty, . or .." >&2
         continue ;;
     esac
     if printf '%s\n' "$served" | grep -qxF "$name"; then
@@ -70,8 +70,16 @@ mkdir -p /run/cubby-sessions
 chown syncuser:syncuser /run/cubby-sessions
 
 # Seed the served-key list, then cut a client whose key is deleted, moved out
-# or rewritten (see cubby-on-key-change).
+# or rewritten (see cubby-on-key-change). After a watcher restart the hook runs first, for keys removed in the gap.
 /usr/local/bin/cubby-on-key-change
-inotifyd /usr/local/bin/cubby-on-key-change /pubkeys:dmwy &
+(
+    set +e
+    while :; do
+        inotifyd /usr/local/bin/cubby-on-key-change /pubkeys:dmwy
+        echo "WARNING: inotifyd exited with code $?; restarting the key watcher." >&2
+        sleep 1
+        /usr/local/bin/cubby-on-key-change
+    done
+) &
 
 exec /usr/sbin/sshd -D -e

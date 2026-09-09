@@ -30,8 +30,10 @@ Notifications: when the server marker carries ntfyUrl (NTFY_URL in the server's
 ntfy topic: sync unhealthy or healthy again, conflicts appearing or resolved,
 backups stale or running again. Backup failures are pushed by the server itself.
 Nothing is sent without a URL or on the first run. The marker is a synced file
-any client can rewrite, so its URL is used only when it is https on ntfy.sh;
-CUBBY_NTFY_URL is trusted as given.
+any client can rewrite, so its URL is used only when it is https on ntfy.sh, and
+the first one seen is pinned per device next to the cache; a later change is
+reported to the pinned topic once and ignored until the .ntfy pin file is
+deleted. CUBBY_NTFY_URL is trusted as given.
 
 The markers stay on this device: create the session with --ignore=/.cubby/local.
 The script reads the session's ignore list and writes nothing when that path is
@@ -55,7 +57,7 @@ or CUBBY_MUTAGEN_DATA_DIR where the scheduler cannot set it.
 pwsh -NoProfile -File watch.ps1 Cubby
 
 .NOTES
-Exit codes: 0 = status.ok written; 2 = status.err written; 1 = no marker written.
+Exit codes: 0 = status.ok written; 2 = status.err written; 1 = no status marker written.
 
 Scheduling:
   cron:           * * * * * pwsh -NoProfile -File /path/to/.cubby/client/watch.ps1 Cubby
@@ -98,56 +100,70 @@ function Get-SessionSlug([string]$Name) {
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-# Runs in a background job so a wedged daemon cannot hang the probe.
+# Windows command-line quoting for ProcessStartInfo.Arguments; PowerShell 5.1 has no ArgumentList.
+function ConvertTo-ArgumentToken([string]$Arg) {
+    if ($Arg.Length -gt 0 -and $Arg -notmatch '[\s"]') { return $Arg }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    $slashes = 0
+    foreach ($ch in $Arg.ToCharArray()) {
+        if ($ch -eq '\') { $slashes++ }
+        elseif ($ch -eq '"') { [void]$sb.Append([char]'\', $slashes * 2 + 1).Append('"'); $slashes = 0 }
+        else { [void]$sb.Append([char]'\', $slashes).Append($ch); $slashes = 0 }
+    }
+    return $sb.Append([char]'\', $slashes * 2).Append('"').ToString()
+}
+
 function Get-SessionState {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
         [Parameter(Mandatory = $true)][hashtable]$MutagenCli
     )
-    # Windows PowerShell 5.1 cannot dereference members through $using:.
-    $exe = $MutagenCli.Path
-    $dataDir = $MutagenCli.DataDir
-    $job = Start-Job -ScriptBlock {
-        $exe = $using:exe
-        $dataDir = $using:dataDir
-        $name = $using:SessionName
-        if ($dataDir -and -not $env:MUTAGEN_DATA_DIRECTORY) {
-            $env:MUTAGEN_DATA_DIRECTORY = $dataDir
-        }
-        # A warning on stderr must not corrupt the JSON on stdout.
-        $stdout = @(); $stderr = @()
-        & $exe sync list --template '{{ json . }}' $name 2>&1 | ForEach-Object {
-            if ($_ -is [System.Management.Automation.ErrorRecord]) { $stderr += "$_" }
-            else { $stdout += "$_" }
-        }
-        [pscustomobject]@{
-            Lines    = $stdout
-            ErrLines = $stderr
-            ExitCode = $LASTEXITCODE
-        }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MutagenCli.Path
+    $psi.Arguments = (@('sync', 'list', '--template', '{{ json . }}', $SessionName) | ForEach-Object { ConvertTo-ArgumentToken $_ }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    # Otherwise the CLI starts its own daemon when none answers, racing daemon.ps1 and hiding a crash.
+    $psi.EnvironmentVariables['MUTAGEN_DISABLE_AUTOSTART'] = '1'
+    if ($MutagenCli.DataDir -and -not $env:MUTAGEN_DATA_DIRECTORY) {
+        $psi.EnvironmentVariables['MUTAGEN_DATA_DIRECTORY'] = $MutagenCli.DataDir
     }
 
+    $proc = $null
     try {
-        if ($null -eq (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
+        try {
+            $proc = [System.Diagnostics.Process]::Start($psi)
+        }
+        catch {
+            return @{ Ok = $false; Error = "failed to run mutagen: $($_.Exception.Message)" }
+        }
+        # Both streams drained concurrently; a full pipe would block mutagen.
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try {
+                $proc.Kill()
+            }
+            catch [System.InvalidOperationException] {
+                Write-Verbose 'mutagen exited between the deadline and the kill'
+            }
             return @{ Ok = $false; Error = "mutagen did not answer within $TimeoutSeconds seconds" }
         }
-        $completed = Receive-Job -Job $job -ErrorAction SilentlyContinue -ErrorVariable jobErrors
+        $text = $outTask.Result.Trim()
+        $errText = ConvertTo-SingleLine $errTask.Result.Trim()
+        $exitCode = $proc.ExitCode
     }
     finally {
-        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        if ($null -ne $proc) { $proc.Dispose() }
     }
 
-    if ($null -eq $completed) {
-        $detail = if ($jobErrors) { (@($jobErrors) | ForEach-Object { "$_" }) -join '; ' } else { 'no output' }
-        return @{ Ok = $false; Error = "failed to run mutagen: $detail" }
-    }
-
-    $text = (@($completed.Lines) | ForEach-Object { "$_" }) -join "`n"
-    $errText = (@($completed.ErrLines) | ForEach-Object { "$_" }) -join '; '
-    if ($completed.ExitCode -ne 0) {
+    if ($exitCode -ne 0) {
         $detail = (@($errText, $text) | Where-Object { $_ }) -join ' | '
-        return @{ Ok = $false; Error = "mutagen exited with code $($completed.ExitCode): $detail" }
+        return @{ Ok = $false; Error = "mutagen exited with code ${exitCode}: $detail" }
     }
 
     try {
@@ -314,12 +330,39 @@ function Test-TrustedNtfyUrl([string]$Url) {
     return [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -eq 'https' -and $uri.Host -eq 'ntfy.sh'
 }
 
+function Resolve-NtfyUrl([hashtable]$Backup) {
+    $result = @{ Url = $null; Ignored = ''; Pin = [System.IO.Path]::ChangeExtension($cachePath, '.ntfy') }
+    if (-not [string]::IsNullOrWhiteSpace($env:CUBBY_NTFY_URL)) {
+        $result.Url = $env:CUBBY_NTFY_URL
+        return $result
+    }
+    $offered = "$($Backup.NtfyUrl)".Trim()
+    if (Test-Path -LiteralPath $result.Pin) {
+        $result.Url = ([System.IO.File]::ReadAllText($result.Pin)).Trim()
+        if ($offered -and $offered -ne $result.Url) { $result.Ignored = $offered }
+        return $result
+    }
+    if (Test-TrustedNtfyUrl $offered) {
+        try {
+            [System.IO.File]::WriteAllText($result.Pin, $offered)
+        }
+        catch {
+            Write-Warning "[$now] could not pin the ntfy URL in '$($result.Pin)': $($_.Exception.Message)"
+        }
+        $result.Url = $offered
+    }
+    return $result
+}
+
 # Edge-triggered against the previous marker. Conflicts -1 = unknown this run.
-function Send-TransitionNotification([string]$Dir, [hashtable]$Previous, [bool]$Healthy, [string]$Detail, [int]$Conflicts, [hashtable]$Backup) {
-    $url = $env:CUBBY_NTFY_URL
-    if ([string]::IsNullOrWhiteSpace($url) -and (Test-TrustedNtfyUrl $Backup.NtfyUrl)) { $url = $Backup.NtfyUrl }
+function Send-TransitionNotification([string]$Dir, [hashtable]$Previous, [bool]$Healthy, [string]$Detail, [int]$Conflicts, [hashtable]$Backup, [hashtable]$Ntfy) {
+    $url = $Ntfy.Url
     if ([string]::IsNullOrWhiteSpace($url) -or $null -eq $Previous) { return }
     $tag = "$SessionName on $([Environment]::MachineName)"
+
+    if ($Ntfy.Ignored -and "$($Previous['ntfyIgnored'])" -ne $Ntfy.Ignored) {
+        Send-Notification $Dir $url 'high' "$tag ignores a changed ntfy URL in the server marker; delete $($Ntfy.Pin) on that device to accept it."
+    }
 
     $wasHealthy = ("$($Previous['healthy'])" -eq 'true')
     if ($wasHealthy -and -not $Healthy) { Send-Notification $Dir $url 'high' "$tag is not syncing: $Detail" }
@@ -450,6 +493,7 @@ try {
         }
         if ($dir -and (Test-Path -LiteralPath $dir)) {
             $backup = Get-BackupSummary $dir
+            $ntfy = Resolve-NtfyUrl $backup
             $previous = Read-PreviousMarker $dir
             $lines = @(
                 "checkedAt=$now"
@@ -457,9 +501,9 @@ try {
                 "healthy=false"
                 "status=unknown"
                 "lastError=$(ConvertTo-SingleLine $result.Error)"
-            ) + (Format-BackupSummary $backup)
+            ) + (Format-BackupSummary $backup) + "ntfyIgnored=$($ntfy.Ignored)"
             Write-StatusMarker -Dir $dir -Healthy $false -Lines $lines
-            Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $false -Detail (ConvertTo-SingleLine $result.Error) -Conflicts -1 -Backup $backup
+            Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $false -Detail (ConvertTo-SingleLine $result.Error) -Conflicts -1 -Backup $backup -Ntfy $ntfy
             $summary = "[$now] status.err lastError=$(ConvertTo-SingleLine $result.Error) backups=$($backup.Status)"
             Write-RunLog $dir $summary
             Write-Output $summary
@@ -508,6 +552,7 @@ try {
     ($problems -eq 0)
 
     $backup = Get-BackupSummary $dir
+    $ntfy = Resolve-NtfyUrl $backup
     $previous = Read-PreviousMarker $dir
     $lines = @(
         "checkedAt=$now"
@@ -520,11 +565,8 @@ try {
         "conflicts=$($conflicts.Count)"
         "problems=$problems"
         "lastError=$lastError"
-    ) + (Format-BackupSummary $backup)
-    Write-StatusMarker -Dir $dir -Healthy $healthy -Lines $lines
-    $detail = "status=$status paused=$paused alpha=$alphaConnected beta=$betaConnected problems=$problems lastError=$lastError"
-    Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $healthy -Detail $detail -Conflicts $conflicts.Count -Backup $backup
-
+    ) + (Format-BackupSummary $backup) + "ntfyIgnored=$($ntfy.Ignored)"
+    # Before the status marker, so exit 1 still means no status marker was written.
     try {
         Write-ConflictsMarker -Dir $dir -Conflicts $conflicts -Session $session
     }
@@ -532,6 +574,9 @@ try {
         Write-Warning "[$now] failed to update conflicts.json: $($_.Exception.Message)"
         exit 1
     }
+    Write-StatusMarker -Dir $dir -Healthy $healthy -Lines $lines
+    $detail = "status=$status paused=$paused alpha=$alphaConnected beta=$betaConnected problems=$problems lastError=$lastError"
+    Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $healthy -Detail $detail -Conflicts $conflicts.Count -Backup $backup -Ntfy $ntfy
 
     $marker = if ($healthy) { 'status.ok' } else { 'status.err' }
     $summary = "[$now] $marker status=$status conflicts=$($conflicts.Count) problems=$problems lastError=$lastError backups=$($backup.Status) count=$($backup.Count) last=$($backup.Last)"
