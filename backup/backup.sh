@@ -10,6 +10,7 @@ INTERVAL=${BACKUP_INTERVAL:-3600}
 KEEP_HOURLY=${BACKUP_KEEP_HOURLY:-24}
 KEEP_DAILY=${BACKUP_KEEP_DAILY:-14}
 KEEP_WEEKLY=${BACKUP_KEEP_WEEKLY:-8}
+NTFY_URL=${NTFY_URL:-}
 
 case "$INTERVAL" in
     ''|*[!0-9]*) echo "ERROR: BACKUP_INTERVAL must be a whole number of seconds, got '$INTERVAL'." >&2; exit 1 ;;
@@ -165,6 +166,7 @@ write_status() {
         "keepDaily=$KEEP_DAILY" \
         "keepWeekly=$KEEP_WEEKLY" \
         "interval=$INTERVAL" \
+        "ntfyUrl=$NTFY_URL" \
         "consecutiveFailures=$failures" > "$tmp" || ! mv -f "$tmp" "$STATUS_DIR/$marker"; then
         echo "WARNING: could not write $STATUS_DIR/$marker; shared/.cubby/backup must be owned by uid 1000." >&2
         rm -f "$tmp"
@@ -173,13 +175,31 @@ write_status() {
     rm -f "$STATUS_DIR/$stale"
 }
 
+# Push through ntfy when NTFY_URL is set; a failed push is logged and forgotten.
+notify() {
+    [ -n "$NTFY_URL" ] || return 0
+    wget -q -T 10 -O /dev/null --post-data="$2" --header="Title: Cubby backup" --header="Priority: $1" "$NTFY_URL" \
+        || echo "WARNING: could not notify $NTFY_URL" >&2
+}
+
+# Only on change; a fresh start counts as coming from ok, so an ongoing failure is reported once.
+last=""
 while :; do
     if snapshot; then
         failures=0
-        if [ "$snapshot_skipped" -eq 0 ]; then write_status ok; else write_status partial; fi
+        if [ "$snapshot_skipped" -eq 0 ]; then result=ok; else result=partial; fi
     else
         failures=$((failures + 1))
-        write_status "rsync-$snapshot_rc"
+        result="rsync-$snapshot_rc"
     fi
+    write_status "$result"
+    if [ "$result" != "${last:-ok}" ]; then
+        case "$result" in
+            ok) notify default "Backups recovered: snapshot $(readlink "$DST/latest") written." ;;
+            partial) notify high "Backup partial: $snapshot_skipped unreadable path(s) skipped; see the cubby-backup log." ;;
+            *) notify high "Backup failed: rsync exit ${result#rsync-}, no snapshot written ($failures in a row)." ;;
+        esac
+    fi
+    last=$result
     sleep "$INTERVAL"
 done

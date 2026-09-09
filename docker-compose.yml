@@ -58,6 +58,7 @@ services:
       BACKUP_KEEP_HOURLY: "${BACKUP_KEEP_HOURLY:-24}"
       BACKUP_KEEP_DAILY: "${BACKUP_KEEP_DAILY:-14}"
       BACKUP_KEEP_WEEKLY: "${BACKUP_KEEP_WEEKLY:-8}"
+      NTFY_URL: "${NTFY_URL:-}"
     volumes:
       - ./shared:/shared:ro
       - ./backups:/backups

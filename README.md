@@ -26,7 +26,7 @@ docker compose logs cubby | grep 'Host key fingerprint'
 - `shared/.cubby/`: `client/` (helpers, overwritten from the image at every start), `backup/status.ok|err` (written by the backup container), `local/` (each client's own markers, never synced).
 - Files added to `shared/` from the host need `sudo chown -R 1000:1000 shared/<path>`.
 - Back up `config/`: it holds the host key.
-- Docker publishes past `ufw`. To bind elsewhere or tune backups, copy `.env.example` to `.env`.
+- Docker publishes past `ufw`. To bind elsewhere, tune backups or set an ntfy topic for push notifications, copy `.env.example` to `.env`.
 
 ## Sync
 
@@ -64,7 +64,7 @@ systemctl --user enable --now mutagen.service
 loginctl enable-linger $USER # on headless machines
 ```
 
-**Health markers (optional).** Writes `status.ok|err` (sync health plus backup summary) and `conflicts.json` into `.cubby/local/`, and appends a line to `.cubby/local/logs/watch.log`; the script header has fields, scheduling and exit codes.
+**Health markers (optional).** Writes `status.ok|err` (sync health plus backup summary) and `conflicts.json` into `.cubby/local/`, and appends a line to `.cubby/local/logs/watch.log`; with `NTFY_URL` set on the server it pushes sync, conflict and backup changes. The script header has fields, scheduling and exit codes.
 ```bash
 pwsh -NoProfile -File .cubby/client/watch.ps1 Cubby
 ```

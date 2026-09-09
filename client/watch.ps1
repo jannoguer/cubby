@@ -25,6 +25,12 @@ The local directory is cached so status.err can still be written when the
 daemon is unreachable. Each run appends its summary line to
 .cubby/local/logs/watch.log (rotated at 1 MB, five files kept).
 
+Notifications: when the server marker carries ntfyUrl (NTFY_URL in the server's
+.env) or CUBBY_NTFY_URL is set, changes since the previous run are pushed to that
+ntfy topic: sync unhealthy or healthy again, conflicts appearing or resolved,
+backups stale or running again. Backup failures are pushed by the server itself.
+Nothing is sent without a URL or on the first run.
+
 The markers stay on this device: create the session with --ignore=/.cubby/local.
 The script reads the session's ignore list and writes nothing when that path is
 not ignored, so a forgotten flag cannot leak markers into the sync.
@@ -210,7 +216,7 @@ function ConvertTo-SingleLine([string]$Text) {
 # Reads the server's marker; .err wins over .ok, and a missing or malformed
 # marker is unknown rather than an error of this probe.
 function Get-BackupSummary([string]$Dir) {
-    $summary = @{ Status = 'unknown'; Count = ''; Last = ''; LastResult = ''; Skipped = ''; UpdatedAt = '' }
+    $summary = @{ Status = 'unknown'; Count = ''; Last = ''; LastResult = ''; Skipped = ''; UpdatedAt = ''; NtfyUrl = '' }
     $markerDir = Join-Path (Join-Path $Dir '.cubby') 'backup'
     $err = Join-Path $markerDir 'status.err'
     $ok = Join-Path $markerDir 'status.ok'
@@ -228,6 +234,7 @@ function Get-BackupSummary([string]$Dir) {
     $summary.LastResult = "$($fields['lastResult'])"
     $summary.Skipped = "$($fields['skipped'])"
     $summary.UpdatedAt = "$($fields['updatedAt'])"
+    $summary.NtfyUrl = "$($fields['ntfyUrl'])"
     if ($summary.Status -ne 'ok') { return $summary }
 
     $updated = [DateTime]::MinValue
@@ -254,6 +261,60 @@ function Get-MarkerDir([string]$Dir) {
 
 function Write-RunLog([string]$Dir, [string]$Text) {
     Add-LogLine -Path (Join-Path (Join-Path (Get-MarkerDir $Dir) 'logs') 'watch.log') -Line $Text
+}
+
+# The marker this run is about to replace, as key=value fields; $null on the first run.
+function Read-PreviousMarker([string]$Dir) {
+    foreach ($name in @('status.ok', 'status.err')) {
+        $path = Join-Path (Get-MarkerDir $Dir) $name
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $fields = @{}
+        foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+            $i = $line.IndexOf('=')
+            if ($i -gt 0) { $fields[$line.Substring(0, $i)] = $line.Substring($i + 1) }
+        }
+        return $fields
+    }
+    return $null
+}
+
+# A failed push is a warning in the log, never a failed run.
+function Send-Notification([string]$Dir, [string]$Url, [string]$Priority, [string]$Text) {
+    try {
+        Invoke-RestMethod -Method Post -Uri $Url -Body $Text -ContentType 'text/plain' -TimeoutSec 10 `
+            -Headers @{ Title = 'Cubby'; Priority = $Priority } | Out-Null
+        Write-RunLog $Dir "[$now] notified: $Text"
+    }
+    catch {
+        $msg = "[$now] could not notify ${Url}: $($_.Exception.Message)"
+        Write-RunLog $Dir $msg
+        Write-Warning $msg
+    }
+}
+
+# Edge-triggered against the previous marker. Conflicts -1 = unknown this run.
+function Send-TransitionNotification([string]$Dir, [hashtable]$Previous, [bool]$Healthy, [string]$Detail, [int]$Conflicts, [hashtable]$Backup) {
+    $url = $env:CUBBY_NTFY_URL
+    if ([string]::IsNullOrWhiteSpace($url)) { $url = $Backup.NtfyUrl }
+    if ([string]::IsNullOrWhiteSpace($url) -or $null -eq $Previous) { return }
+    $tag = "$SessionName on $([Environment]::MachineName)"
+
+    $wasHealthy = ("$($Previous['healthy'])" -eq 'true')
+    if ($wasHealthy -and -not $Healthy) { Send-Notification $Dir $url 'high' "$tag is not syncing: $Detail" }
+    elseif (-not $wasHealthy -and $Healthy) { Send-Notification $Dir $url 'default' "$tag is syncing again." }
+
+    $hadConflicts = 0
+    if ($Conflicts -ge 0 -and [int]::TryParse("$($Previous['conflicts'])", [ref]$hadConflicts)) {
+        if ($hadConflicts -eq 0 -and $Conflicts -gt 0) { Send-Notification $Dir $url 'high' "$tag has $Conflicts conflict(s); see .cubby/local/conflicts.json." }
+        elseif ($hadConflicts -gt 0 -and $Conflicts -eq 0) { Send-Notification $Dir $url 'default' "$tag conflicts resolved." }
+    }
+
+    # Failures and partial snapshots are the server's to report.
+    $wasBackup = "$($Previous['backupStatus'])"
+    if ($wasBackup -ne $Backup.Status) {
+        if ($Backup.Status -eq 'stale') { Send-Notification $Dir $url 'high' "$tag sees no server backup since $($Backup.UpdatedAt)." }
+        elseif ($wasBackup -eq 'stale' -and $Backup.Status -eq 'ok') { Send-Notification $Dir $url 'default' "$tag sees server backups running again." }
+    }
 }
 
 # Without the ignore, every device would sync its markers into the same files.
@@ -370,6 +431,7 @@ try {
         }
         if ($dir -and (Test-Path -LiteralPath $dir)) {
             $backup = Get-BackupSummary $dir
+            $previous = Read-PreviousMarker $dir
             $lines = @(
                 "checkedAt=$now"
                 "session=$(ConvertTo-SingleLine $SessionName)"
@@ -378,6 +440,7 @@ try {
                 "lastError=$(ConvertTo-SingleLine $result.Error)"
             ) + (Format-BackupSummary $backup)
             Write-StatusMarker -Dir $dir -Healthy $false -Lines $lines
+            Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $false -Detail (ConvertTo-SingleLine $result.Error) -Conflicts -1 -Backup $backup
             $summary = "[$now] status.err lastError=$(ConvertTo-SingleLine $result.Error) backups=$($backup.Status)"
             Write-RunLog $dir $summary
             Write-Output $summary
@@ -425,6 +488,7 @@ try {
     $betaConnected
 
     $backup = Get-BackupSummary $dir
+    $previous = Read-PreviousMarker $dir
     $lines = @(
         "checkedAt=$now"
         "session=$(ConvertTo-SingleLine $SessionName)"
@@ -437,6 +501,8 @@ try {
         "lastError=$lastError"
     ) + (Format-BackupSummary $backup)
     Write-StatusMarker -Dir $dir -Healthy $healthy -Lines $lines
+    $detail = "status=$status paused=$paused alpha=$alphaConnected beta=$betaConnected lastError=$lastError"
+    Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $healthy -Detail $detail -Conflicts $conflicts.Count -Backup $backup
 
     try {
         Write-ConflictsMarker -Dir $dir -Conflicts $conflicts -Session $session
