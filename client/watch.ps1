@@ -425,24 +425,20 @@ if ($null -eq $MutagenCli) {
 
 $now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 
-# Overlapping scheduled runs would contend for the same staging file. Global\
-# spans logon sessions, so an interactive run and a scheduled one exclude each other.
-$mutex = New-Object System.Threading.Mutex($false, "Global\cubby-watch-$(Get-SessionSlug $SessionName)")
-$acquired = $false
+# Overlapping scheduled runs would contend for the same staging file. A lock file
+# in the per-user cache dir spans logon sessions, cannot be squatted by another
+# local account like a Global\ mutex, and is released by the OS if a run dies.
+$cachePath = Get-CachePath
+$lock = $null
 try {
     try {
-        $acquired = $mutex.WaitOne(0)
+        $lock = [System.IO.File]::Open("$cachePath.lock", [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     }
-    catch [System.Threading.AbandonedMutexException] {
-        # A previous holder died without releasing; the mutex is ours now.
-        $acquired = $true
-    }
-    if (-not $acquired) {
+    catch [System.IO.IOException] {
         Write-Warning "[$now] another instance is already running for '$SessionName'"
         exit 1
     }
 
-    $cachePath = Get-CachePath
     $result = Get-SessionState -SessionName $SessionName -TimeoutSeconds $TimeoutSeconds -MutagenCli $MutagenCli
 
     if (-not $result.Ok) {
@@ -543,6 +539,5 @@ try {
     exit $(if ($healthy) { 0 } else { 2 })
 }
 finally {
-    if ($acquired) { $mutex.ReleaseMutex() }
-    $mutex.Dispose()
+    if ($null -ne $lock) { $lock.Dispose() }
 }
