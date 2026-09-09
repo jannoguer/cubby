@@ -104,7 +104,12 @@ echo "[8/9] Shared storage"
 if [ ! -L ~/storage/shared ]; then
     termux-setup-storage
     echo "Accept the Android permission dialog."
-    until [ -L ~/storage/shared ]; do sleep 1; done
+    n=0
+    until [ -L ~/storage/shared ]; do
+        n=$((n + 1))
+        [ "$n" -le 120 ] || { echo "ERROR: storage permission not granted; run termux-setup-storage and rerun." >&2; exit 1; }
+        sleep 1
+    done
 fi
 mkdir -p ~/storage/shared/Cubby
 
