@@ -22,13 +22,14 @@ backupSkipped unreadable paths (listed in the server log); stale means older
 than twice the backup interval. Backups never change healthy=.
 
 The local directory is cached so status.err can still be written when the
-daemon is unreachable.
+daemon is unreachable. Each run appends its summary line to
+.cubby/local/logs/watch.log (rotated at 1 MB, five files kept).
 
 The markers stay on this device: create the session with --ignore=/.cubby/local.
 The script reads the session's ignore list and writes nothing when that path is
 not ignored, so a forgotten flag cannot leak markers into the sync.
 
-Windows PowerShell 5.1 and PowerShell 7+ (macOS/Linux: pwsh). Self-contained.
+Windows PowerShell 5.1 and PowerShell 7+ (macOS/Linux: pwsh). Needs common.ps1 next to it.
 
 .PARAMETER SessionName
 Name (or identifier) of the Mutagen sync session.
@@ -88,32 +89,7 @@ function Get-SessionSlug([string]$Name) {
     return "$safe-$(([System.BitConverter]::ToString($bytes, 0, 4) -replace '-', '').ToLower())"
 }
 
-# Never located by scanning C:\Users: any local user can plant a binary in a
-# profile they own (C:\Users\Public needs no privileges) and it would run with
-# the scheduled task's rights. CUBBY_MUTAGEN_DATA_DIR exists for schedulers
-# that cannot set Mutagen's own MUTAGEN_DATA_DIRECTORY.
-function Resolve-MutagenCli {
-    param([string]$MutagenPath)
-
-    $dataDir = $env:CUBBY_MUTAGEN_DATA_DIR
-    if ([string]::IsNullOrWhiteSpace($dataDir)) { $dataDir = $null }
-
-    if ([string]::IsNullOrWhiteSpace($MutagenPath)) { $MutagenPath = $env:CUBBY_MUTAGEN_PATH }
-
-    if (-not [string]::IsNullOrWhiteSpace($MutagenPath)) {
-        if (-not (Test-Path -LiteralPath $MutagenPath -PathType Leaf)) {
-            Write-Warning "mutagen was not found at '$MutagenPath'."
-            return $null
-        }
-        return @{ Path = (Resolve-Path -LiteralPath $MutagenPath).ProviderPath; DataDir = $dataDir }
-    }
-
-    $cmd = Get-Command mutagen -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) {
-        return @{ Path = $cmd.Source; DataDir = $dataDir }
-    }
-    return $null
-}
+. (Join-Path $PSScriptRoot 'common.ps1')
 
 # Runs in a background job so a wedged daemon cannot hang the probe.
 function Get-SessionState {
@@ -276,6 +252,10 @@ function Get-MarkerDir([string]$Dir) {
     return Join-Path (Join-Path $Dir '.cubby') 'local'
 }
 
+function Write-RunLog([string]$Dir, [string]$Text) {
+    Add-LogLine -Path (Join-Path (Join-Path (Get-MarkerDir $Dir) 'logs') 'watch.log') -Line $Text
+}
+
 # Without the ignore, every device would sync its markers into the same files.
 function Test-MarkersIgnored($Session) {
     # Session-wide list plus the per-endpoint overrides.
@@ -398,7 +378,9 @@ try {
                 "lastError=$(ConvertTo-SingleLine $result.Error)"
             ) + (Format-BackupSummary $backup)
             Write-StatusMarker -Dir $dir -Healthy $false -Lines $lines
-            Write-Output "[$now] status.err written to $dir backups=$($backup.Status)"
+            $summary = "[$now] status.err lastError=$(ConvertTo-SingleLine $result.Error) backups=$($backup.Status)"
+            Write-RunLog $dir $summary
+            Write-Output $summary
         }
         else {
             Write-Warning "[$now] synced directory unknown; no marker written"
@@ -465,7 +447,9 @@ try {
     }
 
     $marker = if ($healthy) { 'status.ok' } else { 'status.err' }
-    Write-Output "[$now] $marker status=$status conflicts=$($conflicts.Count) backups=$($backup.Status) count=$($backup.Count) last=$($backup.Last)"
+    $summary = "[$now] $marker status=$status conflicts=$($conflicts.Count) lastError=$lastError backups=$($backup.Status) count=$($backup.Count) last=$($backup.Last)"
+    Write-RunLog $dir $summary
+    Write-Output $summary
     exit 0
 }
 finally {

@@ -47,7 +47,11 @@ Compare the fingerprint ssh shows with the server log. In Git Bash prefix the co
 
 **Daemon on boot.**
 
-Windows/macOS:
+Windows (logs to `.cubby/local/logs/mutagen.log`, replaces `mutagen daemon register`):
+```powershell
+pwsh -NoProfile -File .cubby\client\daemon.ps1 -Register C:\path\to\local\folder
+```
+macOS:
 ```bash
 mutagen daemon register
 ```
@@ -60,7 +64,7 @@ systemctl --user enable --now mutagen.service
 loginctl enable-linger $USER # on headless machines
 ```
 
-**Health markers (optional).** Writes `status.ok|err` (sync health plus backup summary) and `conflicts.json` into `.cubby/local/`; the script header has fields, scheduling and exit codes.
+**Health markers (optional).** Writes `status.ok|err` (sync health plus backup summary) and `conflicts.json` into `.cubby/local/`, and appends a line to `.cubby/local/logs/watch.log`; the script header has fields, scheduling and exit codes.
 ```bash
 pwsh -NoProfile -File .cubby/client/watch.ps1 Cubby
 ```
