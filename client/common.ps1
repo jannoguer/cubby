@@ -49,3 +49,14 @@ function Add-LogLine {
     }
     [System.IO.File]::AppendAllText($Path, $Line + "`n")
 }
+
+function Get-Timestamp { return [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') }
+
+# This device's markers and logs; the session must ignore /.cubby/local.
+function Get-MarkerDir([string]$Dir) {
+    return Join-Path (Join-Path $Dir '.cubby') 'local'
+}
+
+function Get-LocalLogPath([string]$Dir, [string]$Name) {
+    return Join-Path (Join-Path (Get-MarkerDir $Dir) 'logs') $Name
+}

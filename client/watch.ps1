@@ -78,6 +78,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'common.ps1')
 
 # Mutagen 0.18 status strings; anything else counts as unhealthy.
 $OkStatuses = @(
@@ -97,8 +98,6 @@ function Get-SessionSlug([string]$Name) {
     }
     return "$safe-$(([System.BitConverter]::ToString($bytes, 0, 4) -replace '-', '').ToLower())"
 }
-
-. (Join-Path $PSScriptRoot 'common.ps1')
 
 # Windows command-line quoting for ProcessStartInfo.Arguments; PowerShell 5.1 has no ArgumentList.
 function ConvertTo-ArgumentToken([string]$Arg) {
@@ -245,6 +244,19 @@ function ConvertTo-SingleLine([string]$Text) {
     return ($Text -replace "[\r\n]+", ' ')
 }
 
+function Read-KeyValueFile([string]$Path) {
+    $fields = @{}
+    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+        $i = $line.IndexOf('=')
+        if ($i -gt 0) { $fields[$line.Substring(0, $i)] = $line.Substring($i + 1) }
+    }
+    return $fields
+}
+
+function ConvertTo-Flag([bool]$Value) {
+    return $(if ($Value) { 'true' } else { 'false' })
+}
+
 # Reads the server's marker; .err wins over .ok, and a missing or malformed
 # marker is unknown rather than an error of this probe.
 function Get-BackupSummary([string]$Dir) {
@@ -256,11 +268,7 @@ function Get-BackupSummary([string]$Dir) {
     elseif (Test-Path -LiteralPath $ok) { $file = $ok; $summary.Status = 'ok' }
     else { return $summary }
 
-    $fields = @{}
-    foreach ($line in [System.IO.File]::ReadAllLines($file)) {
-        $i = $line.IndexOf('=')
-        if ($i -gt 0) { $fields[$line.Substring(0, $i)] = $line.Substring($i + 1) }
-    }
+    $fields = Read-KeyValueFile $file
     $summary.Count = "$($fields['snapshots'])"
     $summary.Last = "$($fields['lastSnapshot'])"
     $summary.LastResult = "$($fields['lastResult'])"
@@ -288,25 +296,15 @@ function Get-BackupSummary([string]$Dir) {
     return $summary
 }
 
-function Get-MarkerDir([string]$Dir) {
-    return Join-Path (Join-Path $Dir '.cubby') 'local'
-}
-
 function Write-RunLog([string]$Dir, [string]$Text) {
-    Add-LogLine -Path (Join-Path (Join-Path (Get-MarkerDir $Dir) 'logs') 'watch.log') -Line $Text
+    Add-LogLine -Path (Get-LocalLogPath $Dir 'watch.log') -Line $Text
 }
 
 # The marker this run is about to replace, as key=value fields; $null on the first run.
 function Read-PreviousMarker([string]$Dir) {
     foreach ($name in @('status.ok', 'status.err')) {
         $path = Join-Path (Get-MarkerDir $Dir) $name
-        if (-not (Test-Path -LiteralPath $path)) { continue }
-        $fields = @{}
-        foreach ($line in [System.IO.File]::ReadAllLines($path)) {
-            $i = $line.IndexOf('=')
-            if ($i -gt 0) { $fields[$line.Substring(0, $i)] = $line.Substring($i + 1) }
-        }
-        return $fields
+        if (Test-Path -LiteralPath $path) { return Read-KeyValueFile $path }
     }
     return $null
 }
@@ -404,36 +402,38 @@ function Format-BackupSummary([hashtable]$Backup) {
     )
 }
 
-# The stale marker goes last, so at least one marker exists at all times.
-function Write-StatusMarker([string]$Dir, [bool]$Healthy, [string[]]$Lines) {
+# Staged in the marker directory and swapped in, so a reader never sees a partial file.
+function Write-MarkerFile([string]$Dir, [string]$Name, [string]$Stage, [string]$Content) {
     $markerDir = Get-MarkerDir $Dir
     if (-not (Test-Path -LiteralPath $markerDir)) {
         New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
     }
-    $stage = Join-Path $markerDir '.status.tmp'
-    $ok = Join-Path $markerDir 'status.ok'
-    $err = Join-Path $markerDir 'status.err'
-    if ($Healthy) { $target = $ok; $stale = $err } else { $target = $err; $stale = $ok }
-
+    $stagePath = Join-Path $markerDir $Stage
     try {
-        [System.IO.File]::WriteAllText($stage, ($Lines -join "`n") + "`n")
-        Move-IntoPlace -Stage $stage -Destination $target
+        [System.IO.File]::WriteAllText($stagePath, $Content)
+        Move-IntoPlace -Stage $stagePath -Destination (Join-Path $markerDir $Name)
     }
     catch {
-        if (Test-Path -LiteralPath $stage) {
-            Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $stagePath) {
+            Remove-Item -LiteralPath $stagePath -Force -ErrorAction SilentlyContinue
         }
         throw
     }
-    if (Test-Path -LiteralPath $stale) {
-        Remove-Item -LiteralPath $stale -Force
+}
+
+# The stale marker goes last, so at least one marker exists at all times.
+function Write-StatusMarker([string]$Dir, [bool]$Healthy, [string[]]$Lines) {
+    if ($Healthy) { $target = 'status.ok'; $stale = 'status.err' } else { $target = 'status.err'; $stale = 'status.ok' }
+    Write-MarkerFile -Dir $Dir -Name $target -Stage '.status.tmp' -Content (($Lines -join "`n") + "`n")
+    $stalePath = Join-Path (Get-MarkerDir $Dir) $stale
+    if (Test-Path -LiteralPath $stalePath) {
+        Remove-Item -LiteralPath $stalePath -Force
     }
 }
 
 # Removed when there are no conflicts, so its presence alone is the signal.
 function Write-ConflictsMarker([string]$Dir, [object[]]$Conflicts, $Session) {
-    $markerDir = Get-MarkerDir $Dir
-    $path = Join-Path $markerDir 'conflicts.json'
+    $path = Join-Path (Get-MarkerDir $Dir) 'conflicts.json'
     if ($Conflicts.Count -eq 0) {
         if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Force
@@ -444,21 +444,8 @@ function Write-ConflictsMarker([string]$Dir, [object[]]$Conflicts, $Session) {
     if ($Session.excludedConflicts -gt 0) {
         Write-Warning "[$now] $($Session.excludedConflicts) additional conflicts were not reported by mutagen"
     }
-    if (-not (Test-Path -LiteralPath $markerDir)) {
-        New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
-    }
-    $stage = Join-Path $markerDir 'conflicts.json.tmp'
     $json = ConvertTo-Json -InputObject $Conflicts -Depth 32
-    try {
-        [System.IO.File]::WriteAllText($stage, $json + "`n")
-        Move-IntoPlace -Stage $stage -Destination $path
-    }
-    catch {
-        if (Test-Path -LiteralPath $stage) {
-            Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
-        }
-        throw
-    }
+    Write-MarkerFile -Dir $Dir -Name 'conflicts.json' -Stage 'conflicts.json.tmp' -Content ($json + "`n")
 }
 
 $MutagenCli = Resolve-MutagenCli -MutagenPath $MutagenPath
@@ -467,7 +454,7 @@ if ($null -eq $MutagenCli) {
     exit 1
 }
 
-$now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+$now = Get-Timestamp
 
 # Overlapping scheduled runs would contend for the same staging file. A lock file
 # in the per-user cache dir spans logon sessions, cannot be squatted by another
@@ -557,11 +544,11 @@ try {
     $lines = @(
         "checkedAt=$now"
         "session=$(ConvertTo-SingleLine $SessionName)"
-        "healthy=$(if ($healthy) { 'true' } else { 'false' })"
+        "healthy=$(ConvertTo-Flag $healthy)"
         "status=$status"
-        "paused=$(if ($paused) { 'true' } else { 'false' })"
-        "alphaConnected=$(if ($alphaConnected) { 'true' } else { 'false' })"
-        "betaConnected=$(if ($betaConnected) { 'true' } else { 'false' })"
+        "paused=$(ConvertTo-Flag $paused)"
+        "alphaConnected=$(ConvertTo-Flag $alphaConnected)"
+        "betaConnected=$(ConvertTo-Flag $betaConnected)"
         "conflicts=$($conflicts.Count)"
         "problems=$problems"
         "lastError=$lastError"

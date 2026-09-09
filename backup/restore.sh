@@ -7,7 +7,7 @@
 set -eu
 
 usage() {
-    sed -n '3,5s/^# //p' "$0" >&2
+    sed -n '4,6s/^# //p' "$0" >&2
     exit 2
 }
 

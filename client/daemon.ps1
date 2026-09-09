@@ -64,9 +64,7 @@ if (-not (Test-Path -LiteralPath $LocalDir -PathType Container)) {
     exit 1
 }
 $LocalDir = (Resolve-Path -LiteralPath $LocalDir).ProviderPath
-$logFile = Join-Path (Join-Path (Join-Path (Join-Path $LocalDir '.cubby') 'local') 'logs') 'mutagen.log'
-
-function Get-Timestamp { return [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') }
+$logFile = Get-LocalLogPath $LocalDir 'mutagen.log'
 
 if ($Register) {
     if ($env:OS -ne 'Windows_NT') {
@@ -75,8 +73,8 @@ if ($Register) {
     }
     $vbs = Join-Path $PSScriptRoot 'run-hidden.vbs'
     # The edition running now is the one known to exist at login.
-    $host_exe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
-    $cmd = "wscript.exe `"$vbs`" $host_exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" `"$LocalDir`""
+    $hostExe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+    $cmd = "wscript.exe `"$vbs`" $hostExe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" `"$LocalDir`""
     $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     Set-ItemProperty -Path $key -Name 'Cubby' -Value $cmd
     Write-Output "Login entry written: $cmd"

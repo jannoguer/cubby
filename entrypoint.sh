@@ -57,7 +57,6 @@ mkdir -p "$CUBBY_DIR" "$CUBBY_DIR/backup"
 chown root:root "$CUBBY_DIR"
 chmod 755 "$CUBBY_DIR"
 chown syncuser:syncuser "$CUBBY_DIR/backup"
-rm -f "$CUBBY_DIR"/backup_status.ok "$CUBBY_DIR"/backup_status.err # marker location before backup/
 # rsync rather than rm+cp: unchanged files stay untouched and the tree never
 # disappears, so clients have nothing spurious to sync. --delete stays inside client/.
 rsync -a --delete --chown=root:root --chmod=D755,F644 /opt/cubby/client/ "$CUBBY_DIR/client/"

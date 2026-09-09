@@ -13,6 +13,7 @@ KEEP_WEEKLY=${BACKUP_KEEP_WEEKLY:-8}
 NTFY_URL=${NTFY_URL:-}
 REMOTE=${BACKUP_REMOTE:-}
 REMOTE_PORT=${BACKUP_REMOTE_PORT:-22}
+RSYNC_ERR=/tmp/rsync-errors
 
 case "$INTERVAL" in
     ''|*[!0-9]*) echo "ERROR: BACKUP_INTERVAL must be a whole number of seconds, got '$INTERVAL'." >&2; exit 1 ;;
@@ -104,7 +105,6 @@ prune() {
 
 snapshot_fail=""
 snapshot_skipped=0
-RSYNC_ERR=/tmp/rsync-errors
 snapshot() {
     ts=$(date -u +%Y-%m-%dT%H%M%SZ)
     snapshot_skipped=0

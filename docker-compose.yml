@@ -20,7 +20,7 @@ services:
       - CHOWN            # entrypoint: home and /shared ownership
       - DAC_OVERRIDE     # entrypoint: read host-owned key files, chmod mounts
       - FOWNER           # entrypoint: chmod on host-owned bind mounts
-      - KILL             # sshd: signal syncuser's session processes
+      - KILL             # sshd and the key watcher: signal syncuser's processes
       - NET_BIND_SERVICE # sshd: bind port 22
       - SETGID           # sshd: drop to syncuser and the privsep user
       - SETUID
