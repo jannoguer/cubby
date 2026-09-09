@@ -1,6 +1,6 @@
 # Cubby
 
-Self-hosted file sync. One Alpine container runs a key-only `sshd`, every device runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, and a second container keeps hardlinked snapshots where no client key can reach them.
+Self-hosted file sync. One Alpine container runs a key-only `sshd`, every device runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, and a second container keeps hardlinked snapshots where no client key can reach them. Sync, backups and health checks are on by default; notifications and offsite mirroring are opt-in.
 
 1. [Server](#1-server)
 2. [Client](#2-client)
