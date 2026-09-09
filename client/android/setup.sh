@@ -108,13 +108,25 @@ if [ ! -L ~/storage/shared ]; then
 fi
 mkdir -p ~/storage/shared/Cubby
 
-echo "[9/9] Sync session"
-termux-chroot mutagen daemon run > /dev/null 2>&1 &
+echo "[9/9] Daemon service and sync session"
+# runit keeps the daemon alive across Termux sessions and restarts it if it dies.
+pkg install -y termux-services
+SVC="$PREFIX/var/service/mutagen"
+mkdir -p "$SVC/log"
+cat > "$SVC/run" <<'RUN'
+#!/data/data/com.termux/files/usr/bin/sh
+exec termux-chroot mutagen daemon run 2>&1
+RUN
+chmod +x "$SVC/run"
+ln -sf "$PREFIX/share/termux-services/svlogger" "$SVC/log/run"
+# runsvdir normally starts with the next shell; start it now for this one.
+. "$PREFIX/etc/profile.d/start-services.sh"
+sv-enable mutagen
 # A client command would autostart its own daemon inside this proot and hang.
 n=0
 until [ -S ~/.mutagen/daemon/daemon.sock ]; do
     n=$((n + 1))
-    [ "$n" -le 15 ] || { echo "ERROR: mutagen daemon did not start." >&2; exit 1; }
+    [ "$n" -le 30 ] || { echo "ERROR: mutagen daemon did not start; see sv status mutagen and $PREFIX/var/log/sv/mutagen/." >&2; exit 1; }
     sleep 1
 done
 if termux-chroot mutagen sync list Cubby > /dev/null 2>&1; then
@@ -125,7 +137,6 @@ else
 fi
 termux-chroot mutagen sync list
 
-echo "Done. Files sync between ~/storage/shared/Cubby and the server."
-echo "The daemon dies with Termux; restart it anytime with:"
-echo "  termux-chroot mutagen daemon run > /dev/null 2>&1 &"
-echo "For long syncs run termux-wake-lock and exempt Termux from battery optimization."
+echo "Done. Files sync between ~/storage/shared/Cubby and the server while Termux runs."
+echo "Daemon: sv status mutagen; log: $PREFIX/var/log/sv/mutagen/current."
+echo "For boot start and battery settings see docs/ANDROID_SETUP.md."
