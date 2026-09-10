@@ -6,14 +6,18 @@
 # Overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_HOST_FINGERPRINT, CUBBY_MUTAGEN_VERSION.
 set -eu
 
+die() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
 case "${PREFIX-}" in
 *com.termux*) ;;
-*) echo "ERROR: this script must run inside Termux." >&2; exit 1 ;;
+*) die "this script must run inside Termux." ;;
 esac
 
 if ! { : < /dev/tty; } 2>/dev/null; then
-    echo "ERROR: no terminal available for prompts; run from an interactive Termux session." >&2
-    exit 1
+    die "no terminal available for prompts; run from an interactive Termux session."
 fi
 
 echo "[1/9] Installing base packages"
@@ -61,7 +65,7 @@ else
         printf "Server address: "
         read -r SERVER_IP < /dev/tty
     fi
-    [ -n "$SERVER_IP" ] || { echo "ERROR: server address is required." >&2; exit 1; }
+    [ -n "$SERVER_IP" ] || die "server address is required."
     PORT=${CUBBY_SERVER_PORT-}
     if [ -z "$PORT" ]; then
         printf "Server port [2222]: "
@@ -86,11 +90,10 @@ if [ -n "${CUBBY_HOST_FINGERPRINT-}" ]; then
     PORT=$(ssh -G cubby 2>/dev/null | awk '/^port /{print $2}')
     # Newer ssh-keyscan prints its banner comment on stdout.
     KEYLINE=$(ssh-keyscan -p "$PORT" -t ed25519 "$HOST" 2>/dev/null | grep -v '^#') || true
-    [ -n "$KEYLINE" ] || { echo "ERROR: could not fetch the host key from $HOST port $PORT." >&2; exit 1; }
+    [ -n "$KEYLINE" ] || die "could not fetch the host key from $HOST port $PORT."
     FINGERPRINT=$(printf '%s\n' "$KEYLINE" | ssh-keygen -lf - | awk '{print $2}')
     if [ "$FINGERPRINT" != "$CUBBY_HOST_FINGERPRINT" ]; then
-        echo "ERROR: server presented $FINGERPRINT, expected $CUBBY_HOST_FINGERPRINT." >&2
-        exit 1
+        die "server presented $FINGERPRINT, expected $CUBBY_HOST_FINGERPRINT."
     fi
     printf '%s\n' "$KEYLINE" >> ~/.ssh/known_hosts
     chmod 600 ~/.ssh/known_hosts
@@ -108,7 +111,7 @@ if [ ! -L ~/storage/shared ]; then
     n=0
     until [ -L ~/storage/shared ]; do
         n=$((n + 1))
-        [ "$n" -le 120 ] || { echo "ERROR: storage permission not granted; run termux-setup-storage and rerun." >&2; exit 1; }
+        [ "$n" -le 120 ] || die "storage permission not granted; run termux-setup-storage and rerun."
         sleep 1
     done
 fi
@@ -132,7 +135,7 @@ sv-enable mutagen
 n=0
 until [ -S ~/.mutagen/daemon/daemon.sock ]; do
     n=$((n + 1))
-    [ "$n" -le 30 ] || { echo "ERROR: mutagen daemon did not start; see sv status mutagen and $PREFIX/var/log/sv/mutagen/." >&2; exit 1; }
+    [ "$n" -le 30 ] || die "mutagen daemon did not start; see sv status mutagen and $PREFIX/var/log/sv/mutagen/."
     sleep 1
 done
 if termux-chroot mutagen sync list Cubby > /dev/null 2>&1; then

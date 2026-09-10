@@ -15,26 +15,29 @@ REMOTE=${BACKUP_REMOTE:-}
 REMOTE_PORT=${BACKUP_REMOTE_PORT:-22}
 RSYNC_ERR=/tmp/rsync-errors
 
+die() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
 case "$INTERVAL" in
-    ''|*[!0-9]*) echo "ERROR: BACKUP_INTERVAL must be a whole number of seconds, got '$INTERVAL'." >&2; exit 1 ;;
+    ''|*[!0-9]*) die "BACKUP_INTERVAL must be a whole number of seconds, got '$INTERVAL'." ;;
 esac
-[ "$INTERVAL" -ge 1 ] || { echo "ERROR: BACKUP_INTERVAL must be at least 1 second, got '$INTERVAL'." >&2; exit 1; }
+[ "$INTERVAL" -ge 1 ] || die "BACKUP_INTERVAL must be at least 1 second, got '$INTERVAL'."
 case "$KEEP_HOURLY" in
-    ''|*[!0-9]*|0) echo "ERROR: BACKUP_KEEP_HOURLY must be a whole number of at least 1, got '$KEEP_HOURLY'." >&2; exit 1 ;;
+    ''|*[!0-9]*|0) die "BACKUP_KEEP_HOURLY must be a whole number of at least 1, got '$KEEP_HOURLY'." ;;
 esac
 case "$KEEP_DAILY$KEEP_WEEKLY" in
-    ''|*[!0-9]*) echo "ERROR: BACKUP_KEEP_DAILY and BACKUP_KEEP_WEEKLY must be whole numbers, got '$KEEP_DAILY' and '$KEEP_WEEKLY'." >&2; exit 1 ;;
+    ''|*[!0-9]*) die "BACKUP_KEEP_DAILY and BACKUP_KEEP_WEEKLY must be whole numbers, got '$KEEP_DAILY' and '$KEEP_WEEKLY'." ;;
 esac
 case "$REMOTE_PORT" in
-    ''|*[!0-9]*) echo "ERROR: BACKUP_REMOTE_PORT must be a whole number, got '$REMOTE_PORT'." >&2; exit 1 ;;
+    ''|*[!0-9]*) die "BACKUP_REMOTE_PORT must be a whole number, got '$REMOTE_PORT'." ;;
 esac
 if [ -n "$REMOTE" ] && [ ! -r /offsite/id_ed25519 ]; then
-    echo "ERROR: BACKUP_REMOTE is set but /offsite/id_ed25519 is missing or not readable by uid 1000." >&2
-    exit 1
+    die "BACKUP_REMOTE is set but /offsite/id_ed25519 is missing or not readable by uid 1000."
 fi
 if [ ! -w "$DST" ]; then
-    echo "ERROR: $DST is not writable by uid $(id -u); run 'chown 1000:1000 backups' on the host." >&2
-    exit 1
+    die "$DST is not writable by uid $(id -u); run 'chown 1000:1000 backups' on the host."
 fi
 
 # Healthcheck. The link's own mtime: rsync -a copies the source tree's mtime
@@ -201,7 +204,6 @@ write_status() {
     rm -f "$STATUS_DIR/$stale"
 }
 
-# Push through ntfy when NTFY_URL is set; a failed push is logged and forgotten.
 notify() {
     [ -n "$NTFY_URL" ] || return 0
     wget -q -T 10 -O /dev/null --post-data="$2" --header="Title: Cubby backup" --header="Priority: $1" "$NTFY_URL" \

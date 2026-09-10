@@ -232,9 +232,7 @@ function Get-CachePath {
     $base = [Environment]::GetFolderPath('LocalApplicationData')
     if ([string]::IsNullOrEmpty($base)) { $base = [System.IO.Path]::GetTempPath() }
     $cacheDir = Join-Path $base 'cubby-watch'
-    if (-not (Test-Path -LiteralPath $cacheDir)) {
-        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
-    }
+    Initialize-Directory $cacheDir
     return Join-Path $cacheDir "$(Get-SessionSlug $SessionName).dir"
 }
 
@@ -254,7 +252,7 @@ function Read-KeyValueFile([string]$Path) {
 }
 
 function ConvertTo-Flag([bool]$Value) {
-    return $(if ($Value) { 'true' } else { 'false' })
+    if ($Value) { return 'true' } else { return 'false' }
 }
 
 # Reads the server's marker; .err wins over .ok, and a missing or malformed
@@ -390,8 +388,13 @@ function Test-MarkersIgnored($Session) {
     return ($ignores -contains '/.cubby/local') -or ($ignores -contains '.cubby/local')
 }
 
-function Format-BackupSummary([hashtable]$Backup) {
+# The status marker's lines: the run header, the sync fields of this path, then
+# the backup summary and the ntfy pin state.
+function Format-StatusMarker([string[]]$SyncFields, [hashtable]$Backup, [hashtable]$Ntfy) {
     return @(
+        "checkedAt=$now"
+        "session=$(ConvertTo-SingleLine $SessionName)"
+    ) + $SyncFields + @(
         "backupStatus=$($Backup.Status)"
         "backupCount=$($Backup.Count)"
         "backupLast=$($Backup.Last)"
@@ -399,15 +402,14 @@ function Format-BackupSummary([hashtable]$Backup) {
         "backupSkipped=$($Backup.Skipped)"
         "backupUpdatedAt=$($Backup.UpdatedAt)"
         "backupOffsite=$($Backup.Offsite)"
+        "ntfyIgnored=$($Ntfy.Ignored)"
     )
 }
 
 # Staged in the marker directory and swapped in, so a reader never sees a partial file.
 function Write-MarkerFile([string]$Dir, [string]$Name, [string]$Stage, [string]$Content) {
     $markerDir = Get-MarkerDir $Dir
-    if (-not (Test-Path -LiteralPath $markerDir)) {
-        New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
-    }
+    Initialize-Directory $markerDir
     $stagePath = Join-Path $markerDir $Stage
     try {
         [System.IO.File]::WriteAllText($stagePath, $Content)
@@ -482,13 +484,11 @@ try {
             $backup = Get-BackupSummary $dir
             $ntfy = Resolve-NtfyUrl $backup
             $previous = Read-PreviousMarker $dir
-            $lines = @(
-                "checkedAt=$now"
-                "session=$(ConvertTo-SingleLine $SessionName)"
+            $lines = Format-StatusMarker -Backup $backup -Ntfy $ntfy -SyncFields @(
                 "healthy=false"
                 "status=unknown"
                 "lastError=$(ConvertTo-SingleLine $result.Error)"
-            ) + (Format-BackupSummary $backup) + "ntfyIgnored=$($ntfy.Ignored)"
+            )
             Write-StatusMarker -Dir $dir -Healthy $false -Lines $lines
             Send-TransitionNotification -Dir $dir -Previous $previous -Healthy $false -Detail (ConvertTo-SingleLine $result.Error) -Conflicts -1 -Backup $backup -Ntfy $ntfy
             $summary = "[$now] status.err lastError=$(ConvertTo-SingleLine $result.Error) backups=$($backup.Status)"
@@ -532,18 +532,16 @@ try {
     $problems = Get-ProblemCount $session
 
     $healthy = ($OkStatuses -contains $status) -and
-    (-not $paused) -and
-    ($lastError -eq '') -and
-    $alphaConnected -and
-    $betaConnected -and
-    ($problems -eq 0)
+        (-not $paused) -and
+        ($lastError -eq '') -and
+        $alphaConnected -and
+        $betaConnected -and
+        ($problems -eq 0)
 
     $backup = Get-BackupSummary $dir
     $ntfy = Resolve-NtfyUrl $backup
     $previous = Read-PreviousMarker $dir
-    $lines = @(
-        "checkedAt=$now"
-        "session=$(ConvertTo-SingleLine $SessionName)"
+    $lines = Format-StatusMarker -Backup $backup -Ntfy $ntfy -SyncFields @(
         "healthy=$(ConvertTo-Flag $healthy)"
         "status=$status"
         "paused=$(ConvertTo-Flag $paused)"
@@ -552,7 +550,7 @@ try {
         "conflicts=$($conflicts.Count)"
         "problems=$problems"
         "lastError=$lastError"
-    ) + (Format-BackupSummary $backup) + "ntfyIgnored=$($ntfy.Ignored)"
+    )
     # Before the status marker, so exit 1 still means no status marker was written.
     try {
         Write-ConflictsMarker -Dir $dir -Conflicts $conflicts -Session $session

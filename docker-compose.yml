@@ -1,3 +1,9 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
 services:
   cubby:
     build: .
@@ -30,11 +36,7 @@ services:
     pids_limit: 256
     # Raise if the Mutagen agent gets killed while scanning a very large tree.
     mem_limit: 1g
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: "3"
+    logging: *logging
     healthcheck:
       # pgrep would still pass for a wedged sshd; the key watcher has nothing else to probe.
       test: ["CMD-SHELL", "pgrep -x inotifyd >/dev/null && nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'"]
@@ -76,11 +78,7 @@ services:
       - no-new-privileges:true
     pids_limit: 64
     mem_limit: 512m
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: "3"
+    logging: *logging
     healthcheck:
       test: ["CMD", "/backup.sh", "check"]
       interval: 5m

@@ -27,6 +27,12 @@ function Resolve-MutagenCli {
     return $null
 }
 
+function Initialize-Directory([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
 # Appends one line; at MaxBytes the file rotates to .1 .. .Keep.
 function Add-LogLine {
     param(
@@ -35,10 +41,7 @@ function Add-LogLine {
         [long]$MaxBytes = 1MB,
         [int]$Keep = 5
     )
-    $dir = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
+    Initialize-Directory (Split-Path -Parent $Path)
     if ((Test-Path -LiteralPath $Path) -and (Get-Item -LiteralPath $Path).Length -ge $MaxBytes) {
         for ($i = $Keep - 1; $i -ge 1; $i--) {
             if (Test-Path -LiteralPath "$Path.$i") {

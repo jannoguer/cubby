@@ -11,12 +11,17 @@ usage() {
     exit 2
 }
 
-[ -d shared ] && [ -d backups ] || { echo "ERROR: run from the directory holding shared/ and backups/." >&2; exit 1; }
+die() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+[ -d shared ] && [ -d backups ] || die "run from the directory holding shared/ and backups/."
 
 # A trailing slash or '.' makes cp, rm and stat follow a symlink at the leaf.
 check_path() {
     case "$1" in
-        ''|/*|.|..|./*|../*|*/.|*/..|*/./*|*/../*|*/) echo "ERROR: PATH must be relative to shared/, without '.' or '..' components or a trailing slash." >&2; exit 1 ;;
+        ''|/*|.|..|./*|../*|*/.|*/..|*/./*|*/../*|*/) die "PATH must be relative to shared/, without '.' or '..' components or a trailing slash." ;;
     esac
 }
 
@@ -29,7 +34,7 @@ check_dirs() {
     set -f; IFS=/
     for c in $2; do
         base="$base/$c"
-        [ -L "$base" ] && { echo "ERROR: $base is a symlink; refusing to go through it." >&2; exit 1; }
+        [ -L "$base" ] && die "$base is a symlink; refusing to go through it."
     done
     unset IFS; set +f
 }
@@ -52,10 +57,10 @@ restore)
     if [ "${2-}" = -f ]; then force=1; shift; fi
     snap=${2-}; p=${3-}
     [ -n "$snap" ] && [ -n "$p" ] || usage
-    case "$snap" in */*|.|..) echo "ERROR: SNAPSHOT must be a snapshot name or 'latest'." >&2; exit 1 ;; esac
+    case "$snap" in */*|.|..) die "SNAPSHOT must be a snapshot name or 'latest'." ;; esac
     check_path "$p"
-    case "$p" in .cubby|.cubby/*) echo "ERROR: .cubby is rebuilt by the server at start; restart the cubby container instead." >&2; exit 1 ;; esac
-    [ "$(id -u)" = 0 ] || { echo "ERROR: run with sudo: the copy must be owned by uid 1000." >&2; exit 1; }
+    case "$p" in .cubby|.cubby/*) die ".cubby is rebuilt by the server at start; restart the cubby container instead." ;; esac
+    [ "$(id -u)" = 0 ] || die "run with sudo: the copy must be owned by uid 1000."
     dir=$(dirname "$p")
     [ "$dir" = . ] && dir=""
     # A live client could swap a parent for a symlink between the checks and
@@ -77,10 +82,9 @@ restore)
     check_dirs "backups/$snap" "$p"
     check_dirs shared "$p"
     src="backups/$snap/$p"
-    [ -e "$src" ] || { echo "ERROR: $src does not exist." >&2; exit 1; }
+    [ -e "$src" ] || die "$src does not exist."
     if [ -e "shared/$p" ] && [ "$force" -eq 0 ]; then
-        echo "ERROR: shared/$p exists; pass -f to replace it." >&2
-        exit 1
+        die "shared/$p exists; pass -f to replace it."
     fi
     # Parents made here must be usable by the sync user too.
     parent=shared
