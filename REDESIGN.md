@@ -1,8 +1,8 @@
 # Cubby redesign: git over ssh
 
-Status: proposal. Nothing in this document is implemented. It replaces Mutagen, both containers, the PowerShell clients and the key watcher with tools that are already on every machine: `sshd`, `git`, `ssh`, `bash`, `cron`, `curl`, and optionally `rsync`. No binary is written or shipped.
+Status: proposal, revision 2. Nothing in this document is implemented. It replaces Mutagen, both containers, the PowerShell clients, the key watcher, the backup sidecar and the notifications with tools that are already on every machine: `sshd`, `git`, `ssh`, `bash`, `cron`. No binary is written or shipped. No network service other than sshd.
 
-The document is an implementation plan. Every choice states what is done, why, and what it costs. Edge cases are listed where the code that handles them will live, so the implementer can tick them off.
+Revision 2 folds in the whole design discussion and an independent research pass with primary sources (appendix B). Every claim marked *verified* was reproduced on git 2.47.3 during that work. Every choice states what is done, why, and what it costs.
 
 1. [Requirements](#1-requirements)
 2. [The decision](#2-the-decision)
@@ -10,9 +10,9 @@ The document is an implementation plan. Every choice states what is done, why, a
 4. [Server](#4-server)
 5. [Client](#5-client)
 6. [Cross-platform rules](#6-cross-platform-rules)
-7. [Health and notifications](#7-health-and-notifications)
-8. [History, restore, offsite](#8-history-restore-offsite)
-9. [Optional: one-way rsync trees](#9-optional-one-way-rsync-trees)
+7. [Visibility instead of notifications](#7-visibility-instead-of-notifications)
+8. [Big files](#8-big-files)
+9. [History, restore, mirror, expiry](#9-history-restore-mirror-expiry)
 10. [Security model](#10-security-model)
 11. [Failure catalogue](#11-failure-catalogue)
 12. [What is lost](#12-what-is-lost)
@@ -20,119 +20,107 @@ The document is an implementation plan. Every choice states what is done, why, a
 14. [Tests](#14-tests)
 15. [Implementation order](#15-implementation-order)
 16. [Deliberately not built](#16-deliberately-not-built)
+- [Appendix A: verified and unverified claims](#appendix-a-verified-and-unverified-claims)
+- [Appendix B: sources](#appendix-b-sources)
 
 ## 1. Requirements
-
-Everything the current stack does that must survive. Numbered so later sections can point at them.
 
 | # | Requirement | Today |
 |---|---|---|
 | R1 | One tree, many devices, changes flow in every direction, offline edits merge later. | Mutagen |
 | R2 | Key-only ssh. One key per device. Add and revoke without restarting anything. | sshd + AuthorizedKeysCommand + inotifyd killer |
-| R3 | Deletions propagate. A conflict never discards data. | Mutagen |
-| R4 | Every past version is kept for a long time and can be restored per path. | rsync hardlink snapshots, tiered retention |
-| R5 | No client key can read, alter or destroy the history. | Second container, separate volume |
-| R6 | Health is visible on each device and on the server without logging in anywhere. | status.ok / status.err markers |
-| R7 | Push notifications on state changes only, opt-in. | ntfy |
-| R8 | Offsite copy, opt-in, pull preferred so the server holds no credentials. | rsync -aH |
-| R9 | Linux, macOS, Windows, Android clients. Start at boot. | pwsh, systemd, runit in Termux |
-| R10 | Install is a clone and one script per side. | yes |
-| R11 | Only widely used tools. Nothing compiled by this project. | violated by Mutagen |
-
-New requirements this redesign adds:
-
-| # | Requirement | Because |
-|---|---|---|
-| R12 | Nothing that is synced is ever executed. | Today `.cubby/client` had to be root-owned on the server to keep a client from pushing a script the others run. Remove the class of problem. |
-| R13 | A file that cannot exist on one platform must not stall the sync of every other file. | Windows names, symlinks, nested repositories. Dropbox degrades per file; so must Cubby. |
-| R14 | No state that differs between platforms may be recorded in the sync. | Anything recorded and platform-dependent ping-pongs forever between two devices. See section 6. |
+| R3 | Deletions propagate. A conflict never discards data. Conflicts are visible in the folder, Dropbox style. | Mutagen |
+| R4 | Every past version is kept and can be restored per path from any device. | rsync hardlink snapshots |
+| R5 | No client key can alter or destroy the history. | second container, separate volume |
+| R6 | Health is visible on each device without logging in anywhere. No push notifications. | status markers + ntfy |
+| R7 | Offsite copy, opt-in, pull-based, the server holds no credentials. | rsync -aH |
+| R8 | Linux, macOS, Windows, Android clients. Start at boot. | pwsh, systemd, runit |
+| R9 | Install is a clone and one script per side. | yes |
+| R10 | Only widely used tools. Nothing compiled by this project. | violated by Mutagen |
+| R11 | Local changes sync within seconds, remote changes arrive within seconds. | Mutagen session |
+| R12 | Big files work with no size cap. Multi-gigabyte files are ordinary files. | Mutagen |
+| R13 | Nothing that is synced is ever executed. | `.cubby/client` had to be root-owned |
+| R14 | A file that cannot exist on one platform never stalls the sync of every other file. | |
+| R15 | No state that differs between platforms is ever recorded in the sync. | |
+| R16 | Simple. One script per side. Every feature earns its lines. | |
 
 ## 2. The decision
 
 ### 2.1 Why not rsync alone
 
-Bidirectional sync needs three things: a transfer, a conflict detector, and a memory of what the tree looked like after the last successful sync. Without the memory, "deleted on the laptop" and "created on the desktop" look identical. rsync has only the transfer. Writing the memory in shell means `find -printf | sort | comm` against a saved listing, a lock, and a three-way decision per path, with the tree changing underneath. That is Unison reimplemented badly. It is not fewer moving parts, only fewer visible ones.
+Bidirectional sync needs a transfer, a conflict detector, and a memory of what the tree looked like after the last successful sync. Without the memory, "deleted here" and "created there" are indistinguishable. rsync has only the transfer. Building the memory in shell is Unison reimplemented badly, with the tree changing underneath.
 
 ### 2.2 Why git
 
-git is the memory (the index and HEAD), the transfer (pack protocol over ssh), the conflict detector (three-way merge against the merge base), and the history (R4), in one tool that is already installed on every device including Termux and Git for Windows. It gives for free: atomic multi-file changes (other devices never see half of a save that touched three files), rename-aware transfer (a moved 2 GB file is not re-uploaded), offline commits, per-path restore from any device, selective sync (`sparse-checkout`), and a server that cannot lose history when told so by two config lines (R5).
+git is the memory (index and HEAD), the transfer (pack protocol over ssh), the conflict detector (three-way merge against a shared base) and the history (R4), in one tool installed on every device including Termux and Git for Windows. It adds atomic multi-file changes, rename-aware transfer, offline commits, per-path restore from any device, selective sync, and a server that cannot lose history when told so by two config lines (R5).
 
-**Decision.** The synced tree is a git working tree. The server is a bare repository behind `sshd`. Every device commits its changes, fetches, merges with a never-auto-merge policy, resolves conflicts by keeping both versions, and pushes.
+**Decision.** The synced folder is a git working tree. The server is a bare repository behind sshd. Every device commits its changes, fetches, merges under a never-blend-contents rule that keeps both versions on conflict, and pushes. git does the merge. Our code decides only what to stage, how to name a loser, and when to stop.
 
-**Because** it satisfies R1, R3, R4, R5, R11 with zero project-built binaries, and the whole client is one bash script.
-
-**Consequence.** Section 12 lists what git cannot do that Mutagen did: mtimes, empty directories, symlinks, resumable transfer of single huge files, and the cost of permanent history. Section 9 covers the escape hatch for bulk media.
-
-### 2.3 Why not the alternatives
+### 2.3 Rejected along the way
 
 | Alternative | Rejected because |
 |---|---|
-| Syncthing | A Go binary and its own daemon, protocol and discovery. Violates R11 in the same way Mutagen does, and drops ssh. |
-| Unison | The correct classic tool, but OCaml, version-locked between peers, and not in Termux or Git for Windows by default. |
-| sshfs / NFS / SFTP mount | Not a sync. No offline copy, no history, one hop of latency per read. |
-| rsync with one-way ownership | Works with zero custom logic when each folder has a single writer. It is section 9, not the core, because R1 says the same folder is edited from several machines. |
-| git-annex | Solves large files properly. Haskell, its own daemon, its own metadata branch. Violates R11. |
-| A Go program | The clean engineering answer and explicitly out of scope. |
-
-### 2.4 Why no containers
-
-The server is one system user, one directory, one sshd drop-in, two hooks and two cron lines. Docker added: a second sshd on 2222 that bypasses `ufw`, capability lists, tmpfs sizes, a healthcheck, a key watcher that kills processes because sshd only checks keys at login, and a second container so that the backup volume is unreachable. In the new design sessions last seconds (a fetch or a push), so revocation needs no killer, and history is protected by git itself, so the second container has no job. Containers stay out. They are allowed for the test suite, where a throwaway `sshd` is convenient.
+| Syncthing, Mutagen, Unison, git-annex, git-lfs | Binaries, daemons or protocols of their own. R10. |
+| A Go program | Out of scope by the owner. |
+| Server-side merging with per-device branches | Replaces git's merge with our code on the critical path, and a client that overwrites its work tree on a stamp check is the kind of cleverness that fails once. |
+| Applying remote state with `git checkout` and reconciling afterwards | `git checkout` exits 0 after failing to overwrite a locked file, moves HEAD anyway, and the next `add -u` would commit the stale content and revert the other device's edit. *Verified.* Section 5.5. |
+| rsync one-way trees for media | Unneeded once big files have no cap. One mechanism. |
+| Symlinks as text placeholders on Windows | Ten lines and an unverified git behaviour for a feature nobody uses in a documents folder. Symlinks are excluded. |
+| ntfy notifications | The owner wants the Dropbox feel: what needs attention is visible in the folder. Section 7. |
+| A file size cap | The reasons for it either do not exist (git streams big files when told to) or are better answered by settings (section 8). |
+| Containers | The server is a user, a directory, an sshd drop-in, one dispatcher, one hook and two cron lines. |
 
 ## 3. Architecture
 
 ```text
- laptop                    server (Debian, no containers)             desktop
- ------                    -------------------------------            -------
- ~/Cubby/  (work tree)     sshd :22, Match User cubby                 ~/Cubby/
- ~/Cubby/.git              /etc/cubby/authorized_keys  root-owned     ~/Cubby/.git
-   cubby/status              one line per device, restrict,command=
-   cubby/logs/             /usr/local/lib/cubby/shell  forced cmd
-   info/exclude            /srv/cubby/main.git         bare, hooks:
-   info/attributes           pre-receive  (validate)     ----->  ntfy (opt-in)
-                             post-receive (log, wake)
- cubby loop  --ssh-->      denyNonFastForwards, denyDeletes   <--ssh--  cubby loop
-   (bash, one file)        cron: health, gc, weekly fsck
-                                   |
- phone (Termux)                    | pull-based (opt-in)
- ~/storage/shared/Cubby            v
- ~/.cubby/main.git         mirror host: git clone --mirror, cron fetch, fsck
+ laptop                        server (Debian, no containers)              desktop
+ ------                        ------------------------------              -------
+ ~/Cubby/        work tree     sshd :22, Match User cubby, ForceCommand    ~/Cubby/
+ ~/Cubby/.git    pointer file  /etc/cubby/authorized_keys   root-owned     ~/.cubby/main.git
+ ~/.cubby/main.git             /usr/local/lib/cubby/shell   dispatcher
+   info/exclude                /srv/cubby/main.git          bare
+   info/attributes               denyNonFastForwards, denyDeletes
+   cubby/status, logs, lock      hooks/pre-receive (root-owned)
+                               cron: maintenance, fsck, disk -> cron mail
+ cubby loop  <--ssh-->                                        <--ssh-->  cubby loop
+   watcher + long-poll wait                                              fsmonitor poll + wait
+                                        |
+ phone (Termux)                         | pull-based, read-only key
+ ~/storage/shared/Cubby                 v
+ ~/.cubby/main.git             mirror host: git clone --mirror, cron fetch, fsck
 ```
-
-Data flow per device, every `cubby.interval` seconds or on a local file event: stage, quarantine, commit, fetch, merge, resolve, push, write status. Section 5.4 has the exact algorithm.
 
 ## 4. Server
 
 ### 4.1 Packages and versions
 
-Debian stable. `openssh-server`, `git`, `curl`, `cron`. `rsync` only for section 9.
+Debian stable: `openssh-server`, `git`, `cron`. Nothing else.
 
 | Tool | Minimum | Because |
 |---|---|---|
-| OpenSSH | 7.2 | `restrict` in `authorized_keys`. |
-| git | 2.30 | `uploadpack.allowFilter`, `init -b`, stable partial clone. Debian 11 ships 2.30, Debian 13 ships 2.47. |
-| rsync | 3.2.4 | `rrsync` installed as a command, not a support script. Section 9 only. |
+| OpenSSH | 7.6 | `restrict` (7.2), `ExposeAuthInfo` (7.6). |
+| git | 2.30 | Stable partial clone, `init -b`. Debian 11 ships 2.30, Debian 13 ships 2.47. |
 
 ### 4.2 Layout
 
 ```text
-/etc/cubby/authorized_keys        root:root 0644. One line per device. sshd reads it directly.
-/etc/cubby/cubby.conf             root:root 0644. NTFY_URL, NTFY_WAKE_URL, DISK_MIN_FREE_PCT, MAX_FILE_SIZE.
-/usr/local/lib/cubby/shell        root:root 0755. Forced command for every key.
-/usr/local/lib/cubby/health       root:root 0755. Cron: disk, fsck, mirror age, transitions to ntfy.
-/srv/cubby/                       cubby:cubby 0755. Home of the cubby user.
-/srv/cubby/main.git/              cubby:cubby. The bare repository.
-/srv/cubby/main.git/config        root:root 0644. git never needs to write it; a push cannot change policy.
-/srv/cubby/main.git/hooks/        root:root 0755, hooks 0755. Same reason.
-/var/lib/cubby/state              cubby:cubby. Last known health, for transition-only notifications.
+/etc/cubby/authorized_keys      root:root 0644. One line per device: restrict <key> <name>.
+/etc/cubby/devices              root:root 0644. "<name> rw|ro". Absent name means rw.
+/usr/local/lib/cubby/shell      root:root 0755. ForceCommand for the cubby user.
+/usr/local/lib/cubby/hooks/     root:root 0755. pre-receive. Set as core.hooksPath.
+/usr/local/lib/cubby/health     root:root 0755. Cron: disk, staleness. Output only when wrong, so cron mails only then.
+/srv/cubby/                     cubby:cubby 0755. Home of the cubby user; 'main.git' resolves against it.
+/srv/cubby/main.git/            cubby:cubby. The bare repository.
+/srv/cubby/main.git/config      root:root 0644. git never writes it; a push cannot change policy.
+/var/lib/cubby/seen/<name>      cubby:cubby. Touched by the dispatcher at every connection.
+/var/lib/cubby/pushed/<name>    cubby:cubby. Touched by post-receive.
 ```
 
-**Why `/etc/cubby/authorized_keys` and not `~cubby/.ssh/authorized_keys`.** The file is root-owned and the cubby user has no shell, so even a bug that gave a client a write somewhere could not add a key. `Match User` sets `AuthorizedKeysFile` to it, so the default location is never consulted.
-
-**Why the repo config and hooks are root-owned.** `git-receive-pack` runs as `cubby`. It writes objects and refs, never `config` or `hooks/`. Owning those as root means a client, which can only ever run `git-receive-pack`, cannot turn off `denyNonFastForwards` even through an unknown git bug that let it write inside the repo.
+**Why root owns config and hooks.** `git-receive-pack` runs as `cubby` and writes objects and refs, never `config` or hooks. Owning those as root means a client, which can only ever run `git-receive-pack`, cannot turn off `denyNonFastForwards` even through an unknown git bug that let it write inside the repo. `core.hooksPath` points outside the repository so a hook cannot be planted through the object store either.
 
 ### 4.3 sshd
 
-`/etc/ssh/sshd_config.d/cubby.conf`:
+`/etc/ssh/sshd_config.d/10-cubby.conf`:
 
 ```text
 Match User cubby
@@ -145,275 +133,251 @@ Match User cubby
     PermitTTY no
     PermitTunnel no
     PermitUserRC no
+    ExposeAuthInfo yes
+    ForceCommand /usr/local/lib/cubby/shell
+    ClientAliveInterval 30
+    ClientAliveCountMax 3
+    MaxSessions 4
     MaxAuthTries 3
     LogLevel VERBOSE
 Match all
 ```
 
-**Why `Match all` at the end.** Debian's `sshd_config` includes `sshd_config.d/*.conf` on its first line. A `Match` block stays open until the next `Match`, so without the reset every global directive that follows in the main file would be parsed inside `Match User cubby` and sshd would refuse to start with "Directive ... is not allowed within a Match block". `Match all` closes the block. This is a documented sshd idiom, not a trick.
+Every keyword is on the list sshd allows inside `Match` (appendix B, S19). `PermitUserEnvironment` is not, which is why the device name does not travel through `environment=`.
 
-**Why `LogLevel VERBOSE`.** It logs the key fingerprint on every login, so `journalctl -u ssh` plus `ssh-keygen -lf /etc/cubby/authorized_keys` maps every connection to a device name with no code of ours.
+**Why `Match all` at the end.** Debian's `sshd_config` includes `sshd_config.d/*.conf` on its first line. A `Match` block stays open until the next `Match`, so without the reset every global directive in the main file would be parsed inside `Match User cubby` and sshd would refuse to start. `Match all` closes the block. Check with `sshd -T -C user=cubby`.
 
-**Why port 22 and the host sshd.** One daemon, one host key, one firewall rule, and `ufw` now actually applies (Docker used to bypass it). The `Match` block cannot loosen anything for other users. Nothing about this design needs a second sshd; if the operator wants one on 2222 for policy reasons, the drop-in works unchanged in a second config file.
+**Why `ForceCommand` and `ExposeAuthInfo` rather than `command=` per key.** `ForceCommand` supersedes any `command=` in `authorized_keys` (S18), so it is the outer wall: a malformed or hand-edited key line can never yield a shell. `ExposeAuthInfo` writes the key that authenticated into the file named by `SSH_USER_AUTH`; the dispatcher maps it to the device name through the comment field of the same root-owned file. The name a client is logged under is therefore never something the client supplied.
 
-The user: `useradd --system --home-dir /srv/cubby --shell /bin/sh cubby`. The shell must be a real shell, not `nologin`, because sshd runs the forced command as `$SHELL -c "command"`. The forced command and `restrict` are the restriction, not the shell; see 4.4.
+**Why the host sshd on port 22.** One daemon, one host key, one firewall rule that `ufw` actually enforces. The `Match` block cannot loosen anything for other users.
 
-### 4.4 Keys and the forced command
+The user: `useradd --system --home-dir /srv/cubby --shell /bin/sh cubby`. The shell must be a real shell because sshd runs `ForceCommand` as `$SHELL -c`. The dispatcher is the restriction, not the shell.
 
-One line per device in `/etc/cubby/authorized_keys`:
+### 4.4 Keys and the dispatcher
+
+`/etc/cubby/authorized_keys`, one line per device:
 
 ```text
-restrict,command="/usr/local/lib/cubby/shell laptop" ssh-ed25519 AAAA... laptop
+restrict ssh-ed25519 AAAA... laptop
+restrict ssh-ed25519 AAAA... phone
+restrict ssh-ed25519 AAAA... mirror
 ```
 
-`restrict` disables pty, forwarding, X11, agent and `~/.ssh/rc`. `command=` runs the dispatcher with the device name; the client's own command arrives in `SSH_ORIGINAL_COMMAND`.
+`restrict` disables pty, forwarding, X11, agent and `~/.ssh/rc`, and "includes all restrictions added in the future". Names: `[A-Za-z0-9._-]+`. `/etc/cubby/devices` holds `mirror ro`.
+
+Add a device: append a line. Revoke: delete it. Neither restarts anything; sshd reads the file at each authentication. A session already open ends on its own, bounded by the fifty-five second `wait` cap. `pkill -u cubby` exists for the impatient.
 
 `/usr/local/lib/cubby/shell`:
 
 ```sh
 #!/bin/sh
-# Forced command for every key in /etc/cubby/authorized_keys. $1 is the device name.
-# Only the two git transport commands for the one repository are allowed; git-shell
-# then refuses anything that is not a git service. Everything else exits 1.
+# ForceCommand for the cubby user. Names the device from the key that authenticated,
+# allows exactly the git transport for main.git plus a long-poll, refuses everything else.
 set -u
-export CUBBY_DEVICE=$1
+repo=/srv/cubby/main.git
+key=$(awk '$1 == "publickey" { print $2 " " $3; exit }' "$SSH_USER_AUTH")
+name=$(awk -v k="$key" '{ for (i = 1; i < NF; i++) if ($i " " $(i+1) == k) { print $(i+2); exit } }' /etc/cubby/authorized_keys)
+[ -n "$name" ] || exit 1
+role=$(awk -v n="$name" '$1 == n { print $2 }' /etc/cubby/devices)
+export CUBBY_DEVICE=$name
+touch "/var/lib/cubby/seen/$name"
 case "${SSH_ORIGINAL_COMMAND-}" in
-    "git-upload-pack 'main.git'" | "git-receive-pack 'main.git'")
-        exec git-shell -c "$SSH_ORIGINAL_COMMAND" ;;
+    "git-upload-pack 'main.git'" | "git upload-pack 'main.git'")
+        exec git-shell -c "git-upload-pack 'main.git'" ;;
+    "git-receive-pack 'main.git'" | "git receive-pack 'main.git'")
+        [ "${role:-rw}" = rw ] || exit 1
+        exec git-shell -c "git-receive-pack 'main.git'" ;;
+    wait\ *)
+        sha=${SSH_ORIGINAL_COMMAND#wait }
+        case "$sha" in *[!0-9a-f]* | '') exit 1 ;; esac
+        i=0
+        while [ "$i" -lt 55 ]; do
+            cur=$(git -C "$repo" rev-parse -q --verify refs/heads/main)
+            if [ "$cur" != "$sha" ]; then echo "$cur"; exit 0; fi
+            sleep 1; i=$((i + 1))
+        done
+        echo "$sha" ;;
     *)
-        echo "cubby: this key may only sync main.git" >&2
+        logger -t cubby "refused $name: ${SSH_ORIGINAL_COMMAND-}"
         exit 1 ;;
 esac
 ```
 
-**Why a dispatcher and not `git-shell` as the login shell.** `git-shell` accepts any repository path the user can read. The dispatcher pins the exact command strings git sends (single quotes included, that is what the ssh transport emits for `cubby@host:main.git`), so a key cannot upload-pack `/srv/other.git` or `git-upload-archive` anything. It also exports the device name for the hooks. Ten lines of `case` is the whole thing.
-
-**Why the device name is the argument and not `hostname`.** The server must name the device from something a client cannot forge. The name lives in a root-owned file, next to the key it belongs to.
-
-**Why `command=` per key and not a `ForceCommand` in the Match block.** `ForceCommand` supersedes `command=`, and then the device name would have to be recovered through `ExposeAuthInfo` and a lookup. Per-key `command=` is the pattern gitolite and GitHub made universal; anyone who reads the file understands it.
-
-Add a device: append a line, no restart. Revoke: delete the line, no restart. A session in flight ends on its own within seconds; `pkill -u cubby` is available if a multi-gigabyte clone must be cut now. The whole key watcher, its state file and its five-pass kill loop are gone (R2).
-
-Names: `[A-Za-z0-9._-]+`, enforced by the install helper, because the name is unquoted inside `command="..."`.
+**Why a dispatcher and not `git-shell` as the login shell.** `git-shell` accepts any repository path the user can read. The dispatcher pins the exact strings git sends, refuses `git-upload-archive`, enforces the read-only role for the mirror, and provides `wait`, which is how a device learns that `main` moved without polling (5.6). No `eval`, no interpolation of client input into a command.
 
 ### 4.5 The repository
 
 ```sh
 git init -q --bare -b main /srv/cubby/main.git
 cd /srv/cubby/main.git
-git config receive.denyNonFastForwards true   # R5: no history rewrite through a push
+git config receive.denyNonFastForwards true   # R5: history is append-only for every client
 git config receive.denyDeletes true           # R5: main cannot be deleted
-git config receive.fsckObjects true           # malformed trees, .git path components, bad modes: rejected at the door
-git config receive.maxInputSize 4g            # one push cannot fill the disk; hooks cap single files lower
+git config receive.fsckObjects true           # malformed objects refused at the door
+git config receive.fsck.hasDotgit error       # .git, .GIT, git~1 as path components: error, not warning
+git config receive.fsck.largePathname error
+git config receive.autogc false               # gc only from cron (4.7); a push never triggers a 100 GB repack
 git config uploadpack.allowFilter true        # clients clone --filter=blob:none (5.2)
+git config core.hooksPath /usr/local/lib/cubby/hooks
+git config core.bigFileThreshold 64m          # above this: no delta search, streamed, stored whole (8.1)
+git config gc.bigPackThreshold 1g             # packs this large are kept, not rewritten by gc
+git config gc.cruftPacks true
+git config gc.pruneExpire 2.weeks.ago
 git config core.logAllRefUpdates true         # bare repos default to no reflog; keep one
 git config gc.reflogExpire never
-git config gc.reflogExpireUnreachable never   # the reflog is the operator's undo for their own mistakes
-git config gc.pruneExpire 2.weeks.ago         # objects from failed pushes do get collected
+git config gc.reflogExpireUnreachable never
+git config core.fsync committed
 git config user.name cubby
 git config user.email cubby@localhost
-# One empty root commit, so every clone has a main to merge with.
 tree=$(git hash-object -t tree /dev/null)
 git update-ref refs/heads/main "$(git commit-tree "$tree" -m init)"
+chown root:root config
 ```
 
-**Why an initial commit.** A clone of an empty repository has no `main`, and the client would need a special first-push path. One empty commit removes a whole branch of client code.
+`receive.maxInputSize` is deliberately unset (R12).
 
-**Why `receive.maxInputSize` at 4 GiB and the per-file cap at 2 GiB (4.6).** The pack cap bounds a single hostile or accidental push. The file cap exists because git does not resume an interrupted push; a 10 GB file over a laptop's Wi-Fi restarts from zero every time. Files above the cap belong in section 9.
+**Why an initial commit.** A clone of an empty repository has no `main`; one empty commit removes a special first-push path from the client.
 
 ### 4.6 pre-receive
 
-Rejects a push that would break a client. Runs in under a second for ordinary pushes; a first push of 100k files takes a few seconds, once.
+Two jobs: only `main` exists, and the final tree contains nothing that breaks another platform (R14, R15). The client already refuses these before commit (5.5); the hook is the backstop against a hand-run `git push` or a hostile key. It runs in under a second for ordinary pushes.
 
 ```sh
 #!/bin/sh
-# stdin: "old new ref" per updated ref. Any non-zero exit rejects the whole push,
-# and everything on stderr reaches the client prefixed "remote:".
 set -u
 zero=0000000000000000000000000000000000000000
-max=$(git config --get cubby.maxFileSize || echo 2147483648)
 fail() { echo "cubby: rejected: $1" >&2; exit 1; }
-
 while read -r old new ref; do
     [ "$ref" = refs/heads/main ] || fail "only main is synced, not $ref"
     [ "$new" != "$zero" ] || fail "main cannot be deleted"
-
-    # Rules on the final tree only (a client that fixed a bad name in a later commit passes).
-    git ls-tree -r -z "$new" | tr '\0' '\n' | awk -v q="'" '
-        $1 == "120000" { print "symlink: " substr($0, index($0, "\t") + 1); bad = 1 }
-        $1 == "160000" { print "nested repository: " substr($0, index($0, "\t") + 1); bad = 1 }
-        END { exit bad }' >&2 || fail "see above; the client excludes these itself, this is the backstop"
-
+    # Modes: only regular files. Symlinks (120000) and nested repositories (160000) never converge.
+    git ls-tree -r -z "$new" | tr '\0' '\n' | awk '$1 != "100644" && $1 != "100755" { print; bad = 1 } END { exit bad }' >&2 \
+        || fail "symlink or nested repository in the tree"
+    # Names Windows cannot create, components over 255 bytes, the attention file at any depth.
     git ls-tree -r --name-only -z "$new" | tr '\0' '\n' | awk '
-        {
-            n = split($0, c, "/")
-            for (i = 1; i <= n; i++) {
-                if (c[i] ~ /[<>:"|?*\\]/ || c[i] ~ /[\001-\037]/ || c[i] ~ /[. ]$/ ||
-                    toupper(c[i]) ~ /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/ || length(c[i]) > 255)
-                    { print "invalid on Windows: " $0; bad = 1; break }
-            }
-        }
-        END { exit bad }' >&2 || fail "see above"
-
+        { n = split($0, c, "/")
+          for (i = 1; i <= n; i++) {
+              if (c[i] ~ /[<>:"|?*\\]/ || c[i] ~ /[\001-\037]/ || c[i] ~ /[. ]$/ || length(c[i]) > 255 ||
+                  toupper(c[i]) ~ /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/ ||
+                  toupper(c[i]) == "CUBBY-ATTENTION.TXT") { print; bad = 1; break } } }
+        END { exit bad }' >&2 || fail "path invalid on Windows or reserved"
     dups=$(git ls-tree -r --name-only -z "$new" | tr '\0' '\n' | tr 'A-Z' 'a-z' | sort | uniq -d)
-    [ -z "$dups" ] || fail "paths differ only by case, impossible on macOS and Windows: $dups"
-
-    # Rule on new objects: single-file size cap.
-    range="$new"; [ "$old" = "$zero" ] || range="$old..$new"
-    git rev-list --objects "$range" | git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' \
-        | awk -v m="$max" '$1 == "blob" && $2 > m { print "file over cubby.maxFileSize: " $3; bad = 1 } END { exit bad }' >&2 \
-        || fail "see above; put files this large in an rsync tree (REDESIGN.md section 9)"
+    [ -z "$dups" ] || fail "paths differ only by case: $dups"
+    # Mass deletion: a second line behind the client guard (5.4 step 4).
+    if [ "$old" != "$zero" ]; then
+        del=$(git diff-tree -r --no-renames --diff-filter=D --name-only -z "$old" "$new" | tr -cd '\0' | wc -c)
+        total=$(git ls-tree -r --name-only -z "$old" | tr -cd '\0' | wc -c)
+        if [ "$del" -gt 1000 ] && [ "$((del * 4))" -gt "$total" ] \
+           && ! git log --format=%B "$old..$new" | grep -qx 'Cubby-Confirm-Delete: yes'; then
+            fail "$del deletions in one push; confirm on the device with cubby accept-deletions"
+        fi
+    fi
 done
 ```
 
-**Why the tree rules look at the final tree but the size rule looks at every new object.** A bad name fixed by a later local commit should not block forever; only the end state matters for names. A huge blob is in the pack whether or not the final tree still references it, so it must be caught per object. The client mirrors the same size rule before committing (5.5), and if a manual `git commit` slipped one in, the client's recovery is to squash its unpushed commits (5.4 step 7), which drops the blob.
+**Why the final tree, not every commit.** A bad name fixed in a later local commit must not block forever. Case collisions are checked ASCII-only on purpose: Unicode case folding differs between macOS and Windows and no shell tool agrees with either.
 
-**Why reject other refs.** The client only ever touches `main`. A stray `git push --all` or a tag from someone using git by hand would otherwise sit on the server as noise that no device ever sees.
-
-**Why the Windows rules on the server at all, since clients exclude them first.** A client set up by hand, or an older script, is the failure mode. The server is the single place every path passes through. The case-collision check is ASCII-only on purpose: Unicode case folding differs between macOS and Windows and neither `tr` nor `awk` can be trusted to agree with either; it catches the common case and states its limit.
-
-### 4.7 post-receive
-
-```sh
-#!/bin/sh
-set -u
-. /etc/cubby/cubby.conf
-zero=0000000000000000000000000000000000000000
-while read -r old new ref; do
-    [ "$ref" = refs/heads/main ] || continue
-    if [ "$old" = "$zero" ]; then stat=initial; else stat=$(git diff --shortstat "$old" "$new"); fi
-    logger -t cubby "push from ${CUBBY_DEVICE:-unknown}: ${stat:-no file changes}"
-    # Optional fast wake for the other devices (7.3). The body is only the device name.
-    [ -z "${NTFY_WAKE_URL:-}" ] || curl -fsS -m 10 -d "${CUBBY_DEVICE:-unknown}" "$NTFY_WAKE_URL" > /dev/null \
-        || logger -t cubby "wake notification failed"
-done
-```
-
-Nothing else runs on receive. There is no server-side checkout of the tree in the core design; section 9 and 16 discuss the optional read-only view.
-
-### 4.8 Cron
+### 4.7 Cron
 
 ```text
-*/10 * * * *  cubby  /usr/local/lib/cubby/health
-30 4 * * 0    cubby  git -C /srv/cubby/main.git gc --quiet
+*/10 * * * *  root   /usr/local/lib/cubby/health
+0 3 * * *     cubby  git -C /srv/cubby/main.git maintenance run --task=incremental-repack --task=commit-graph
+0 4 * * 0     cubby  git -C /srv/cubby/main.git gc --quiet --cruft && git -C /srv/cubby/main.git fsck --connectivity-only --no-dangling
+0 5 1 * *     cubby  git -C /srv/cubby/main.git fsck --no-dangling
 ```
 
-`health` (section 7.2) checks free disk, runs `git fsck --connectivity-only` daily and a full `git fsck` weekly by looking at a stamp file, and reports transitions to ntfy. `gc.auto` also packs after receives; the weekly `gc` is for the reflog and the pack count.
+`health` prints only when something is wrong: filesystem over 85 percent, a device not seen for more than the configured days. cron mails root on output, as it always has. That is the whole server alerting story (R6). `cubby status` on the server prints per-device last seen and last push from `/var/lib/cubby`.
 
-### 4.9 Install
+### 4.8 Install
 
-`server/install.sh`, idempotent, run as root from a clone of this repository:
-
-1. Install packages if missing.
-2. Create the user and `/srv/cubby`, `/etc/cubby`, `/var/lib/cubby`.
-3. Copy `shell`, `health`, hooks; chmod and chown as in 4.2.
-4. Create the bare repository if absent and apply 4.5. Always re-apply the config so a version upgrade of Cubby updates policy.
-5. Write the sshd drop-in, run `sshd -t`, reload sshd only if the test passes.
-6. Print the host key fingerprints (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) and the two commands for adding a key.
-
-Key management is two documented one-liners, not a tool:
+`server/install.sh`, idempotent, root, from a clone of this repository: packages, user, directories, dispatcher, hooks, repository config re-applied on every run, sshd drop-in tested with `sshd -t` before reload, host key fingerprint printed. Key management is documented one-liners:
 
 ```sh
-# add
-printf 'restrict,command="/usr/local/lib/cubby/shell %s" %s %s\n' laptop "$(cut -d' ' -f1-2 laptop.pub)" laptop >> /etc/cubby/authorized_keys
-# revoke
-sed -i '/ laptop$/d' /etc/cubby/authorized_keys
-# list
-ssh-keygen -lf /etc/cubby/authorized_keys
+printf 'restrict %s %s\n' "$(cut -d' ' -f1-2 laptop.pub)" laptop >> /etc/cubby/authorized_keys   # add
+sed -i '/ laptop$/d' /etc/cubby/authorized_keys                                               # revoke
+ssh-keygen -lf /etc/cubby/authorized_keys                                                     # list, also validates
 ```
-
-`install.sh` validates the file after edits with `ssh-keygen -lf`, the same check the entrypoint does today, because a malformed line silently locks out that device.
 
 ## 5. Client
 
 ### 5.1 Layout
 
-The client is one bash script, `client/cubby`, installed outside the synced tree (R12):
-
-| Platform | Install dir | Runs as |
-|---|---|---|
-| Linux, macOS, Termux | `~/.local/lib/cubby/` | the user |
-| Windows | `$LOCALAPPDATA/cubby/` under Git Bash | the user |
-
-Installed by `git clone https://github.com/jannoguer/cubby` and `client/install.sh`, updated by `git pull` in that clone. The loop runs `sync` as a child process each iteration, so an updated script takes effect on the next run without a restart; only changes to the loop itself need a service restart. bash reads a script incrementally while it runs, so the loop never sources or re-reads itself.
-
-Subcommands:
+One bash script, `client/cubby`, installed outside the synced tree (R13) at `~/.local/lib/cubby/` (Linux, macOS, Termux) or `$LOCALAPPDATA/cubby/` (Windows, Git Bash). Installed by cloning this repository and running `client/install.sh`; updated by `git pull` there. The loop runs `sync` as a child process, so an updated script applies at the next pass.
 
 | Command | Does |
 |---|---|
-| `cubby setup DIR --server HOST [--port N] --device NAME [--full]` | Key, host key pinning, clone, per-repo config (5.3), excludes and attributes. |
-| `cubby sync DIR` | One pass of 5.4. Exit 0 healthy, 2 unhealthy, 1 could not run. |
+| `cubby setup DIR --server HOST [--port N] --device NAME [--adopt] [--full]` | Key, host key pinned by fingerprint, clone, per-repo config, excludes, attributes, service. |
+| `cubby sync DIR` | One pass (5.4). Exit 0 healthy, 2 attention needed, 1 could not run. |
 | `cubby loop DIR` | 5.6. Foreground, for the service manager. |
-| `cubby status DIR` | Prints `.git/cubby/status`. |
-| `cubby service install DIR` | Writes the systemd unit, launchd plist, Task Scheduler task or runit service for this platform (5.7). |
-| `cubby doctor DIR` | Versions, config drift against 5.3, `git fsck`, lock state, stale `index.lock`. |
+| `cubby status DIR` | Prints the status file. |
+| `cubby accept-deletions DIR` | Releases a held mass deletion (5.4 step 4). |
+| `cubby service install DIR` | Writes the boot entry for this platform (5.7). |
 
-Everything device-local lives under `.git/cubby/`: `status`, `state`, `logs/sync.log`, `lock/`, `known_hosts`, `hooks/` (empty). Nothing needs an ignore rule because nothing is inside the work tree. The user's folder contains only the user's files and one `.git` entry.
+Restore, history and conflict handling are plain git commands documented in the README (9.1), because the repository is a normal one.
+
+Device-local state lives under `~/.cubby/main.git/cubby/`: `status`, `logs/sync.log`, `lock/`, `known_hosts`, `hooks/` (empty). The folder itself holds only the user's files, a one-line `.git` pointer file, and `CUBBY-ATTENTION.txt` while something needs attention (section 7).
 
 ### 5.2 Clone shape
 
-Default: `git clone --filter=blob:none`. A blobless partial clone holds every commit and tree but fetches file contents only when a checkout needs them.
+```sh
+git clone --filter=blob:none --separate-git-dir "$HOME/.cubby/main.git" cubby@HOST:main.git ~/Cubby
+```
 
-**Because**:
+**`--separate-git-dir`.** The object store is outside the folder. Spotlight, photo apps and backup tools never crawl `.git/objects`; the watcher has nothing to exclude; if the drive holding the folder is unmounted, the pointer file is gone and every pass stops with "not a repository" instead of seeing an empty tree. Android needs this anyway (5.9). Plain git still works inside the folder through the pointer.
 
-- Disk on the device is the current tree plus compressed current blobs, not every version ever. A phone or a small laptop carries history metadata only.
-- Merge bases are always present. A shallow clone (`--depth`) was rejected because after a long offline period the merge base can fall outside the shallow boundary and `git merge` refuses; deepening on failure is slow and unpredictable.
-- The initial download becomes resumable. `git clone` of 50 GB is one non-resumable transfer; a blobless clone downloads metadata in seconds and the following checkout fetches blobs in batches, so a dropped connection loses one batch and `git checkout main` continues.
-- Restore of an old version (8.1) fetches just that blob, on demand.
-
-Cost: a checkout or merge that needs blobs needs the server. They happen right after a fetch, so connectivity is already known to be there. `--full` exists for a desktop meant to be a complete second copy.
-
-Android uses `--separate-git-dir "$HOME/.cubby/main.git"`: objects and index on Termux's private ext4, the work tree on shared storage where other apps can see it. The work tree gets a `.git` file pointing at the directory. **Because** `/sdcard` is a FUSE or sdcardfs view with no permission bits, no symlinks, coarse mtimes and slow small-file I/O; the object store there would be slow and fragile, while the work tree there is exactly what the user wants.
+**`--filter=blob:none`.** A blobless partial clone holds every commit and tree but fetches file contents only when a checkout needs them. Disk on the device is the current tree plus its compressed blobs, not every version. Merge bases are always present, which a shallow clone cannot promise after a long offline period. The initial download is resumable: metadata in seconds, then blobs in batches, and a dropped connection loses one batch. Old-version restore fetches one blob on demand. Cost: a merge that needs blobs needs the server, which is the moment right after a fetch. `--full` for a desktop meant as a complete second copy.
 
 ### 5.3 Per-repository configuration
 
-All in `.git/config`, written by `setup`, checked by `doctor`. Never global: the user's own git settings stay untouched, and theirs never leak in.
+All in the repository's `config`, written by `setup`, never global.
 
 | Key | Value | Because |
 |---|---|---|
-| `cubby.device` | name given at setup | Identity for commits and conflict copies. Not `hostname`: it changes, and two machines may share one. |
-| `cubby.interval` | `60` | Poll period in seconds, section 5.6. |
-| `cubby.ntfyUrl` | empty | Section 7. Set per device at setup, so no URL travels through the synced tree and nothing needs to be trusted. |
-| `cubby.ntfyWakeUrl` | empty | Section 7.3. |
-| `cubby.maxFileSize` | `2147483648` | Same cap as the server hook (4.6), enforced before commit (5.5). |
-| `cubby.staleAfter` | `1800` | Seconds without a successful pass before status flips to unhealthy, unless offline (7.1). |
-| `user.name` / `user.email` | device / `device@cubby.invalid` | Commits need an identity. `.invalid` is the reserved TLD for exactly this. |
+| `cubby.device` | name from setup | Identity for commits and conflict copies. Not `hostname`: it changes, and two machines may share one. |
+| `cubby.interval` | `60` | Full-pass timer (5.6). |
+| `cubby.settle` / `cubby.settleBig` | `2` / `15` | Seconds a file must be unchanged before it is staged (5.4 step 2). |
+| `user.name` / `user.email` | device / `device@cubby.invalid` | Commits need an identity; `.invalid` is reserved for exactly this. |
 | `commit.gpgsign` | `false` | A global signing setup would prompt or fail unattended. |
-| `core.hooksPath` | `.git/cubby/hooks` (empty dir) | A global `core.hooksPath` (husky, lint tooling) must never run against this repo. |
-| `core.sshCommand` | `ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -i KEY -o UserKnownHostsFile=KNOWN -o StrictHostKeyChecking=yes -p PORT` | Self-contained: no edits to `~/.ssh/config`, no prompt ever, dead connections die within a minute, host key pinned to the file written at setup. The user's `~/.ssh/config` is still read, so a VPN jump host keeps working. |
-| `remote.origin.url` | `cubby@HOST:main.git` | scp-like form, so git sends exactly `git-upload-pack 'main.git'`, which is what the dispatcher whitelists. Port goes through `-p` above. |
-| `core.autocrlf` / `core.safecrlf` | `false` | R14. No line-ending conversion, ever. |
-| `core.precomposeunicode` | `true` | macOS returns decomposed names from `readdir`; this normalizes to NFC in the index so a name created on Linux and one created on macOS are the same path. |
+| `core.hooksPath` | `cubby/hooks` (empty) | A global `core.hooksPath` must never run against this repo. |
+| `core.sshCommand` | `ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -i KEY -o UserKnownHostsFile=KNOWN -o StrictHostKeyChecking=yes -p PORT` | No prompt ever, dead connections die within a minute, host key pinned to the file written at setup, `~/.ssh/config` still honoured for jump hosts. |
+| `remote.origin.url` | `cubby@HOST:main.git` | scp-like form so git sends exactly `git-upload-pack 'main.git'`. |
+| `core.autocrlf` / `core.safecrlf` | `false` | R15, and streaming (8.1). |
+| `core.symlinks` | `false` | Symlinks are excluded anyway; never create one from a hostile tree. |
+| `core.protectNTFS` / `core.protectHFS` | `true` | Each defaults on only on its own OS. `.git` look-alikes refused everywhere. |
+| `core.precomposeunicode` | `true` | macOS returns decomposed names; normalize to NFC in the index. |
+| `core.longpaths` | `true` (Windows) | Paths past 260 characters check out. |
 | `core.quotePath` | `false` | Logs show names as they are. All parsing uses `-z`. |
-| `core.longpaths` | `true` (Windows) | Paths past 260 characters do not fail the checkout. |
-| `core.bigFileThreshold` | `50m` | Files above it are stored without delta search: `add` and `gc` stay fast and low-memory; disk cost is the same since media does not delta anyway. |
-| `core.untrackedCache` / `feature.manyFiles` | `true` | `status` on 100k files in well under a second. |
-| `core.fsmonitor` | `true` (macOS, Windows) | git's built-in filesystem monitor makes `status` near-instant; not available on Linux in mainline git. |
-| `core.fileMode` | probed by `git init`; forced `false` on Android | R14. Where the filesystem cannot store the bit, never record a change to it. |
-| `transfer.fsckObjects` | `true` | Corrupt objects from a bad disk on the server are refused, not copied. |
-| `add.ignoreErrors` | `true` | One unreadable file (an exclusively locked PST on Windows) must not abort staging of the other thousand (R13). It is still reported (5.5). |
-| `gc.auto` | default | Loose objects get packed at the default threshold; no separate maintenance scheduler is installed. |
+| `core.bigFileThreshold` | `64m` | Above it: no delta search, streamed in and out, stored whole (8.1). |
+| `core.untrackedCache` / `feature.manyFiles` / `index.threads` | `true` | `status` on 100k files in well under a second. |
+| `core.fsmonitor` | `true` where available | git's built-in watcher: macOS and Windows since 2.37, Linux since 2.55 (S11). Falls back silently where absent. |
+| `core.fileMode` | probed by clone; `false` on Android | R15. Where the filesystem cannot store the bit, never record a change to it. |
+| `merge.renames` / `diff.renames` | `false` | A rename here and an edit there yields both files rather than a rename conflict. Deterministic, and faster on large trees. |
+| `transfer.fsckObjects` | `true` | Corrupt objects from a bad server disk are refused, not copied. |
+| `push.default` | `nothing` | Pushes are always explicit `main:main`. |
 
-`.git/info/attributes`:
+`info/attributes`:
 
 ```text
-* -text -merge
+* -text -diff -merge -filter -ident -working-tree-encoding
 ```
 
-**Because** `-text` kills line-ending conversion for every path regardless of any `.gitattributes` the user stores in their folders, and `-merge` makes every both-sides-modified file a conflict instead of a textual three-way merge. Dropbox never merges file contents, and neither should a file sync: a "successful" automatic merge of JSON, CSV, SVG or LaTeX is a silently corrupted file with no conflict marker anyone will see. `info/attributes` has the highest precedence in git, above any in-tree `.gitattributes`, which is the property R12 and R14 need.
+This line is load-bearing twice. `-merge` makes every both-sides-edited file a conflict instead of a textual three-way merge: a file sync that "successfully" merges JSON or a document is a silently corrupted file. `-text` and the rest prove to git that no content conversion can ever apply, and only then does git stream files above `core.bigFileThreshold` straight into packs instead of reading them whole into memory. *Verified:* without this line a file above the threshold became a loose object; with it, a pack. Git for Windows installs `autocrlf=true` by default, so without it a 20 GB add would try to allocate 20 GB. `info/attributes` has the highest precedence in git, above any `.gitattributes` a user stores in their folders.
 
-`.git/info/exclude`, installed from `client/exclude`:
+`info/exclude`:
 
 ```text
+/CUBBY-ATTENTION.txt
+/.cubby-attention.tmp
 .DS_Store
 ._*
 .Spotlight-V100
 .Trashes
 .fseventsd
+.TemporaryItems
 Thumbs.db
 ehthumbs.db
 desktop.ini
 $RECYCLE.BIN/
+System Volume Information/
 .Trash-*/
 .thumbnails/
 *.swp
@@ -428,407 +392,407 @@ $RECYCLE.BIN/
 *.partial
 ```
 
-OS and editor debris only. `*.conflict-*` is deliberately absent: conflict copies must sync (5.5).
+OS and editor debris only. Conflict copies are deliberately absent: they must sync.
 
 ### 5.4 The sync pass
 
-`cubby sync DIR`, one pass, always under the lock (5.8). Steps are numbered because the failure catalogue (11) and the tests (14) refer to them.
+One pass, under the lock (5.8). Numbered so the failure catalogue (11) and the tests (14) can refer to steps.
 
-1. **Preflight.** `DIR/.git` exists and `git rev-parse --is-inside-work-tree` says yes; otherwise exit 1 with `lastError=not a repository`. `git symbolic-ref -q HEAD` must be `refs/heads/main`; a detached HEAD or another branch (someone ran `git checkout` by hand) is `lastError=HEAD is not main`, exit 2, nothing else happens. **Because** pushing `HEAD:main` from the wrong branch would publish whatever the user was looking at. If `.git/index.lock` exists, is older than ten minutes and no process holds the Cubby lock, remove it and log it: it is the leftover of a crash, and git will otherwise refuse every command forever. If `.git/MERGE_HEAD` exists, a previous pass died mid-merge: run step 6b now, before anything else.
-2. **Stage tracked changes.** `git add -u --ignore-errors`. Modifications and deletions of files git already knows.
-3. **Stage new files.** `git ls-files -o -z --exclude-from=.git/info/exclude | git add -f --ignore-errors --pathspec-from-file=- --pathspec-file-nul`. **Because** this consults only the device's exclude list. `git add -A` would honour every `.gitignore` inside the user's stored folders, and a stored project's `build/` or `.env` would silently never sync. A file sync syncs files; the user's own git ignore files are content, not policy. Entries ending in `/` in that listing are nested repositories (a folder with its own `.git`); they are skipped and reported (5.5), never added as gitlinks.
-4. **Quarantine** (5.5). Unstage and report what cannot sync.
-5. **Commit** if `git diff --cached --quiet` says there is something: `git commit -q -m "DEVICE 2026-09-13T10:15:00Z"`.
-6. **Fetch and merge.** `git fetch -q origin main`. A connection failure is `state=offline` (7.1), pass ends, exit 2 only if stale. If `origin/main` is not an ancestor of HEAD: `git merge -q --no-edit origin/main`.
-   - 6a. Merge succeeds: continue.
-   - 6b. Merge fails and `MERGE_HEAD` exists: conflicts. Run the resolver (5.5) and `git commit -q -m "DEVICE conflict"`. If any unmerged entry remains after the resolver, `git merge --abort`, `lastError=unresolvable merge`, exit 2. Nothing is lost: local commits are local, remote commits are remote, and the next pass retries.
-   - 6c. Merge fails without `MERGE_HEAD`: git refused to start, almost always "local changes would be overwritten" because a file changed in the milliseconds between step 5 and step 6. Log it, exit 2 quietly (7.1 needs two consecutive errors before notifying); the next pass commits the change first and merges cleanly.
-7. **Push** if HEAD is ahead of `origin/main`: `git push -q origin main:main`.
-   - Rejected as non-fast-forward: another device pushed between 6 and 7. Go to 6, at most three times per pass.
-   - Rejected with `cubby: rejected: file over cubby.maxFileSize` or any other hook message: a manual commit bypassed the quarantine. Squash: `git reset -q --soft origin/main`, then steps 2 to 5 once more (the quarantine now drops the offender), push again. `--soft` keeps index and work tree intact; the only thing discarded is local commit granularity that nobody else has seen. If it fails again, `lastError` is the hook message verbatim, exit 2, notify (7.1).
-   - Connection failure: `state=offline`.
-8. **Status.** Write `.git/cubby/status` (7.1), append one line to `logs/sync.log`, send transition notifications, release the lock.
+1. **Preflight.** The pointer file and repository exist, else exit 1 with "not a repository". `git symbolic-ref -q HEAD` is `refs/heads/main`, else attention "HEAD is not main" and nothing else happens: pushing from another branch would publish whatever the user was looking at. If `MERGE_HEAD` exists a previous pass died mid-merge: run step 7b now. If `index.lock` exists, remove it only when it is older than an hour and no git process is alive; a 20 GB `add` on a phone holds it legitimately for a long time.
+2. **Collect candidates.** Modified and deleted tracked files from `git diff-files -z --name-only`. New files from `git ls-files -o -z --exclude-from=GITDIR/info/exclude`, which consults only the device's list: a stored project's own `.gitignore` is content, not policy, so its `build/` syncs like everything else. Drop any candidate whose mtime is within `cubby.settle` seconds of now, or within `cubby.settleBig` seconds for files over 64 MiB, so a file still being written waits one pass. A future mtime counts as settled.
+3. **Quarantine** (5.5). Drop, and record, what cannot travel.
+4. **Mass-deletion guard.** If deletions among the candidates exceed both 100 files and a fifth of the tracked tree, hold the deletions, write the attention entry, and keep syncing everything else. `cubby accept-deletions` releases them and adds the trailer `Cubby-Confirm-Delete: yes` to that commit for the server's second line. An unmounted drive is caught earlier by the pointer file; this catches a mistaken `rm -r` or an application emptying a folder.
+5. **Stage.** Modified and deleted through `git add -u --pathspec-from-file=- --pathspec-file-nul`, new through `git add -f --ignore-errors --pathspec-from-file=- --pathspec-file-nul`. An unreadable or exclusively locked file fails alone and is reported; the rest stages.
+6. **Commit** if `git diff --cached --quiet` says there is something: `git commit -q -m "DEVICE" --date="@NEWEST_MTIME"`. The author date is the newest mtime among the staged files, read with `date -r`, which is what 5.4 step 8 restores on other devices. Files over 256 MiB are committed and pushed one per commit before the rest, so an interrupted push loses one file, not the batch.
+7. **Fetch and merge.** `git fetch -q origin main`. A connection failure is `offline`, pass ends. If `origin/main` is not an ancestor of HEAD:
+   - 7a. **Writability probe.** For every path in `git diff --name-only -z HEAD origin/main`, open it read-write without truncating (`exec 3<>path`). A path that cannot be opened, typically a document held by an application on Windows, is listed in the attention file as "waiting on" and the merge is skipped this pass. Nothing changes.
+   - 7b. `git merge -q --no-edit origin/main`. Success: continue. Failure with `MERGE_HEAD` present: conflicts; run the resolver (5.5) and `git commit -q -m "DEVICE conflict"`. Any unmerged entry left: `git merge --abort`, attention "unresolvable merge", nothing lost, next pass retries. Failure without `MERGE_HEAD`: git refused to start, almost always a file changed in the milliseconds since step 6; next pass commits it first.
+   - Why plain `git merge` and nothing else. *Verified:* a real three-way merge that cannot write a file exits 2 and changes nothing. A fast-forward that cannot write a file leaves HEAD alone and partially writes other files with the remote content, which is harmless: the next pass commits identical blobs and merges trivially. `git checkout` and `git reset --keep` are never used to apply remote state (2.3). `--no-ff` is not used because every device would push an empty merge commit on every fetch, forever.
+8. **Restore mtimes.** For the commits that arrived, one `git log -z --format=%x00%at --name-only --reverse OLD..HEAD` pass, then `touch` each changed file to its commit's author date. Single-file saves come back exact; a batch is off by the settle window. `git update-index --refresh` afterwards so the touched files are not rehashed on every pass.
+9. **Push** if HEAD is ahead: `git push -q origin main:main`. Non-fast-forward rejection: another device won the race, back to 7, at most five times. `cubby: rejected:` from the hook: a hand-made commit bypassed the quarantine; quarantine the named path, commit the fix, push once more; then attention with the message verbatim. Connection failure: `offline`.
+10. **Status.** Write `cubby/status`, rewrite or remove `CUBBY-ATTENTION.txt` (section 7), append one line to the log, release the lock.
 
-Two ssh connections per pass at most, one when nothing changed locally. `ControlMaster` is not used: Git for Windows' ssh does not support it reliably and the handshake is under 200 ms on a LAN.
+One ssh connection when nothing changed locally, two otherwise, plus the standing `wait` (5.6).
 
 ### 5.5 Quarantine and the conflict resolver
 
-**Quarantine** runs on the staged set after steps 2 and 3 and before the commit. Each rule names the R14 ping-pong or R13 stall it prevents.
+**Quarantine** runs on the candidate list before anything is staged, so nothing unwanted ever enters the index.
 
-| Staged entry | Rule | Action | Because |
+| Candidate | Action | Because |
+|---|---|---|
+| symlink | drop, report | Windows checks out a text file and commits a regular file back; Linux replaces the link. Never converges. |
+| directory entry from `ls-files -o` (a nested repository) | drop, report | Would become a gitlink to a commit nobody has; its files invisible to Cubby. The user should know. |
+| FIFO, socket, device | drop, report | git cannot store them. |
+| name invalid on Windows: `<>:"|?*\`, control characters, trailing space or dot, `CON PRN AUX NUL COM1-9 LPT1-9` with any extension, component over 255 bytes | drop, report | That device's checkout would fail at every pass. |
+| new path colliding by ASCII case with a tracked path | drop the new one, report | On a case-insensitive filesystem both names are one file: the second checkout overwrites the first and the next commit pushes that upstream. Silent loss. |
+| `.git` look-alike component | drop, report | fsck would reject it anyway. |
+| `CUBBY-ATTENTION.txt`, `.cubby-attention.tmp` | drop | Device-local by definition (section 7). |
+| `add` reported an error | already unstaged by git, report | Unreadable or locked. Syncs when it can be read. |
+
+**Conflict resolver.** Input is `git ls-files -u -z`: every unmerged path with its stages, 1 base, 2 ours, 3 theirs. Because of `-merge` git never blended anything; the work tree holds ours and the index holds every stage.
+
+| Stages | Meaning | Action | Result |
 |---|---|---|---|
-| mode `120000` (symlink) | exclude | `git rm -q --cached -- path` if new, `git reset -q -- path` if it replaced a tracked file | Windows with `core.symlinks false` checks a symlink out as a text file holding the target and commits it back as a regular file; Linux then replaces the link with that file. Neither side ever converges. |
-| directory entry from step 3 | exclude | not added | A nested repository would become a gitlink: a 40-hex pointer to a commit nobody else has. Its files never sync and the server rejects it anyway. Report it so the user knows the folder is invisible to Cubby. |
-| size over `cubby.maxFileSize` | exclude | as symlink | Non-resumable push, repo growth, and the server would reject the pack. |
-| Windows-invalid name (same regex as 4.6) | exclude | as symlink | Windows cannot create the file; that device's checkout would fail at every pass. |
-| new path colliding by ASCII case with a tracked path | exclude the new one | as symlink | On a case-insensitive filesystem both names are one file: checkout writes the second over the first, `status` shows the first as modified with the second's content, and the next commit pushes that upstream. That is silent data loss, so the newer name loses. |
-| `add` reported an error for it | already unstaged by git | reported | An exclusively locked or unreadable file. It syncs when it can be read. |
-
-Excluded paths are listed in status as `problems=N` with one `problem=path (reason)` line each, and a transition in the set notifies once (7.1). The file stays on disk untouched; Cubby only declines to carry it.
-
-**Conflict resolver.** Input is `git ls-files -u -z`, which lists every unmerged path with its stages: 1 is the common base, 2 is ours (this device), 3 is theirs (the server). Because of `-merge`, git never blended contents; the work tree holds ours and the index holds all stages. Per path:
-
-| Stages present | Meaning | Action | Result |
-|---|---|---|---|
-| 2 and 3 (with or without 1) | both changed it, or both added it differently | `git show :2:path > CONFLICTNAME`; `git checkout -q --theirs -- path`; `git add -- path CONFLICTNAME` | The server's version keeps the name, so every device converges on one file. This device's version sits beside it under a name that says where and when it came from. |
-| 2 only (with or without 1) | they deleted, we modified | `git add -- path` | Modified beats deleted. The file reappears everywhere. |
-| 3 only (with or without 1) | we deleted, they modified | `git checkout -q --theirs -- path; git add -- path` | Same rule from the other side. |
+| 2 and 3, with or without 1 | both changed it, or both added it differently | `git show :2:path > COPY`; `git checkout -q --theirs -- path`; `git add -- path COPY` | The server's version keeps the name. This device's version sits beside it. |
+| 2 only, with or without 1 | they deleted, we modified | `git add -- path` | Modification beats deletion. |
+| 3 only, with or without 1 | we deleted, they modified | `git checkout -q --theirs -- path; git add -- path` | Same rule, other side. |
 | 1 only | both deleted | `git rm -q --cached -- path` | Nothing to keep. |
 
-`CONFLICTNAME` is `STEM.conflict-DEVICE-YYYYMMDDTHHMMSSZ.EXT`: `Report.conflict-laptop-20260913T101500Z.docx`. The extension is preserved so the copy opens with the right application. If the result would exceed 200 bytes the stem is cut; the suffix is unique by device and second, and a second collision within the same second appends `-2`. Rename conflicts fall out of the table: a rename/rename lists the old path with stage 1 only and each new name with one stage, which the rules above keep both of. A directory-versus-file conflict leaves git's `path~HEAD` in the work tree; the following `git add -A` of the resolver's end picks it up rather than losing it, and the status line names it. The copy is taken from stage 2, not the work tree, so a directory or missing file at `path` cannot break it; the cost is that an edit made in the milliseconds between step 5's commit and the merge is superseded by the checkout. That window is measured in milliseconds and the next pass sees the file as modified if anything remained.
+`COPY` is Dropbox's name: `Report (conflicted copy laptop 2026-09-13 101500).docx`. Extension preserved so it opens with the right application; the device is the one whose version lost; the time is the local commit's. Over 200 bytes the stem is cut; a same-second twin gets `-2`. With `merge.renames false` there are no rename cases: a rename on one side and an edit on the other yields the renamed file and the edited original, both present. A directory-versus-file conflict leaves git's `path~HEAD`; the resolver's closing `git add -A` keeps it and the attention file names it. The copy is taken from stage 2, not the work tree, so a directory or missing file at `path` cannot break it.
 
-**Why the server's version keeps the name and not the local one.** Every device runs the same rule. If local always won, two devices resolving the same conflict would each keep their own under the original name and create a new conflict on the next round. With "theirs wins the name" the merge result is identical on every device and the round ends.
+**Why the server's version keeps the name.** `main` is the only thing any device ever merges with, so "theirs" means the same thing on every device and the result tree is identical everywhere. Two devices that both had unpushed edits to the same file each produce their own copy under their own name; the second one to push merges a tree that differs only by a new copy, and the round ends. This is also Dropbox's rule: the second save becomes the conflicted copy.
 
 ### 5.6 The loop
 
 ```text
 cubby loop DIR:
-    last=0
-    producers (optional, each in a subshell, all writing lines into one pipe):
-        inotifywait -m -r -q -e close_write,moved_to,moved_from,create,delete,attrib
-            --exclude '(^|/)\.git(/|$)' DIR              # Linux, Termux private storage
-        fswatch -r --exclude '/\.git(/|$)' DIR           # macOS, if installed
-        while :; do curl -sN "$ntfyWakeUrl/raw"; sleep 5; done   # 7.3, if configured
+    last_full = 0
+    producers, each in a subshell, all writing lines into one pipe:
+        Linux:            inotifywait -m -r -q -e close_write,moved_to,moved_from,create,delete,attrib DIR
+        macOS, Windows:   every 3 s: git status --porcelain -z | head -c1     (fsmonitor makes this ~free)
+        Android:          every 10 s: same                                    (inotify blind on shared storage)
+        all:              loop: ssh cubby wait $(git rev-parse origin/main); print; sleep 5..300 on failure
     forever:
-        remaining = interval - (now - last); if remaining <= 0: run
-        else read -t remaining line from the pipe:
-            timeout             -> run
-            empty line          -> continue          # ntfy keepalives every ~45 s
-            anything else       -> debounce: keep reading with read -t 2 until quiet, then run
-    run: "$0" sync DIR; last=now
+        remaining = interval - (now - last_full)
+        read -t remaining line:
+            timeout            -> full pass
+            line               -> debounce with read -t 2 until quiet, then pass
+    every 10 min a full pass regardless: inotify queue overflow and watch limits are silent
 ```
 
-**Because** three triggers (a timer, local file events, a wake from the server) feed one debounced runner. The timer is computed from the last run and not from `read -t` alone; otherwise ntfy keepalives would keep resetting it and the poll would never fire. The two-second quiet period lets an application finish writing a file before it is committed; a partially written file still gets committed if the write takes longer, exactly as Dropbox does, and the next pass carries the rest.
-
-Without `inotifywait` or `fswatch` the loop is the timer alone, at `cubby.interval` (default 60 s). With them, local changes reach the server within about three seconds. Remote changes reach a device at the next timer tick, or within a second with the wake (7.3). `inotifywait -r` on a tree with more directories than `fs.inotify.max_user_watches` fails to start; the loop logs it once and continues on the timer. On Android shared storage inotify does not report writes by other apps, so the phone runs on the timer.
+Local changes reach the server within about three seconds where a watcher exists. Remote changes reach a device within a second through `wait`, which is one idle ssh session per device that returns the moment `main` moves. Both are optional: the timer alone is a correct, slower Cubby. `inotifywait` that fails to start (watch limit) is logged once and the timer carries on.
 
 ### 5.7 Start at boot
 
-Written by `cubby service install DIR`, one file per platform, all pointing at `cubby loop DIR` with an absolute path:
-
 | Platform | Mechanism | Notes |
 |---|---|---|
-| Linux | `~/.config/systemd/user/cubby.service`, `Restart=always`, `RestartSec=5` | `loginctl enable-linger` for headless machines, as today. Log: `journalctl --user -u cubby`. |
+| Linux | `~/.config/systemd/user/cubby.service`, `Restart=always`, `RestartSec=5` | `loginctl enable-linger` for headless machines. Log: `journalctl --user -u cubby`. |
 | macOS | `~/Library/LaunchAgents/io.cubby.sync.plist`, `RunAtLoad`, `KeepAlive` | `launchctl bootstrap gui/$UID`. |
-| Windows | `schtasks /Create /SC ONLOGON` running `wscript.exe run-hidden.vbs "C:\Program Files\Git\bin\bash.exe" --noprofile --norc -c "…/cubby loop '/c/Users/me/Cubby'"` | `run-hidden.vbs` is kept unchanged: it exists so Task Scheduler does not flash a console at logon. `--noprofile --norc` so a user's bash profile cannot alter the loop's environment. Git for Windows' `bin/bash.exe` sets `PATH` to its own `git`, `ssh`, `curl` and coreutils. |
-| Android | Termux `runit` service under `$PREFIX/var/service/cubby`, `termux-services` and Termux:Boot as today | Nothing about the phone's supervision changes; only the payload is `cubby loop` instead of the Mutagen daemon. |
+| Windows | `schtasks /Create /SC ONLOGON /RL LIMITED /NP /RU USER /TR "bash.exe --noprofile --norc -c '...cubby loop DIR'"` | `/NP` runs without a stored password, non-interactively, so no console window. It needs the "Log on as a batch job" right, which standard users lack by default, and a local account. Where that fails, the fallback is the interactive task through `run-hidden.vbs`, twenty lines that need no PowerShell. Git for Windows' `bin/bash.exe` sets `PATH` to its own git, ssh and coreutils. |
+| Android | Termux `runit` service, `termux-services`, Termux:Boot, `termux-wake-lock` | As today, with `cubby loop` as the payload. The phantom process killer still has to be disabled once. |
 
 ### 5.8 Lock
 
-`mkdir .git/cubby/lock` is the lock; `mkdir` is atomic on every filesystem in scope, `flock(1)` does not exist on macOS or in Git for Windows. The directory holds a `pid` file. A lock whose pid is not alive (`kill -0`) and whose directory is older than fifteen minutes is stale and is removed with a log line. **Because** a pass killed by a reboot must not block every future pass, and a live pass (a first push of 40 GB) must not be interrupted by the timer.
+`mkdir cubby/lock` is the lock: atomic on every filesystem in scope, while `flock(1)` does not exist on macOS or in Git Bash. It holds a `pid` file. Stale means the pid is dead and no git process is alive and the directory is older than an hour. A first push of 40 GB must never be interrupted by the timer; a reboot must never block every future pass.
 
-### 5.9 Android specifics
+### 5.9 Android
 
-Kept from today's `client/android/setup.sh`: Termux from F-Droid, `termux-setup-storage`, key generation, host key pinning by fingerprint with `ssh-keyscan`, `termux-services`, Termux:Boot, the phantom-process-killer note. Changed: `pkg install git openssh curl termux-services`, no Mutagen download, no `proot`, no `termux-chroot`. The clone uses the shape in 5.2. After a checkout that added media, the loop runs `termux-media-scan -r DIR` when the command exists, so the gallery sees new files. Photos taken on the phone are the canonical case for section 9, because they are large, immutable, one-directional and want their mtimes; the git tree carries documents.
+Kept from today's installer: Termux from F-Droid, `termux-setup-storage`, key generation, host key pinned by fingerprint, `termux-services`, Termux:Boot, the phantom-process-killer note. Changed: `pkg install git openssh termux-services`, no Mutagen, no `proot`. The clone is 5.2 with the work tree on `~/storage/shared/Cubby` and the object store on Termux's private storage, because shared storage is a FUSE view with no permission bits, coarse mtimes, slow small-file I/O and reports of corrupted object writes (S30). `core.fileMode false`. inotify does not see other apps' writes there, so the phone polls every ten seconds. After a checkout that added media, `termux-media-scan -r DIR` when the command exists.
 
 ## 6. Cross-platform rules
 
-R14 in full. Every row is a real ping-pong that has bitten someone using git as a file sync.
+git records three things per path: name, mode, content. That is why this list is finite.
 
-| Platform difference | What would ping-pong | Rule that prevents it | Where |
+| Difference | What would ping-pong | Rule | Where |
 |---|---|---|---|
-| Line endings | CRLF on Windows, LF elsewhere | `-text`, `autocrlf false` | 5.3 |
-| Executable bit | Windows and Android cannot store it | `core.fileMode` probed by git, forced off on Android; where it is off, git never records a mode change | 5.3 |
-| Symlinks | Windows checks out a text file | excluded on the client, rejected on the server | 5.5, 4.6 |
-| Case | macOS and Windows collapse `A` and `a` | new colliding path excluded, whole push rejected | 5.5, 4.6 |
-| Unicode normalization | macOS `readdir` returns NFD | `core.precomposeunicode true` normalizes to NFC in the index | 5.3 |
-| Illegal characters and names | Windows refuses `:`, `?`, trailing dots, `NUL` | excluded and rejected | 5.5, 4.6 |
-| Path length | Windows 260 by default | `core.longpaths true`; components over 255 bytes rejected | 5.3, 4.6 |
-| Timestamps | git does not record them | nothing to ping-pong; see section 12 for what is lost | |
-| Nested repositories | gitlinks nobody can resolve | skipped and reported, rejected | 5.5, 4.6 |
-| `.git`-like names | `.GIT`, `git~1`, NTFS streams | `receive.fsckObjects`, and git's own `core.protectNTFS` / `core.protectHFS` defaults | 4.5 |
+| Line endings | CRLF on Windows | `-text`, `autocrlf false` | 5.3 |
+| Executable bit | Windows and Android cannot store it | `core.fileMode` probed; forced off on Android; where off, git never records a mode change | 5.3 |
+| Symlinks | text file on Windows | excluded on the client, rejected on the server | 5.5, 4.6 |
+| Case | macOS and Windows fold `A` and `a` | new colliding path excluded; push rejected | 5.5, 4.6 |
+| Unicode normalization | macOS returns NFD | `core.precomposeunicode true` | 5.3 |
+| Illegal characters and names | Windows refuses them | excluded and rejected | 5.5, 4.6 |
+| Path length | Windows 260 | `core.longpaths true`; components over 255 bytes rejected | 5.3, 4.6 |
+| `.git` look-alikes | `.GIT`, `git~1`, NTFS streams | `protectNTFS`, `protectHFS`, `fsck.hasDotgit error` | 5.3, 4.5 |
+| Nested repositories | gitlinks nobody can resolve | excluded and rejected | 5.5, 4.6 |
+| Timestamps | not recorded | restored from commit author dates | 5.4 step 8 |
 
-Portability rules for the script itself, enforced by `shellcheck` and by running the test suite on all three desktop platforms:
+Portability rules for the script, enforced by `shellcheck` and by CI on all three desktop platforms: bash 3.2 (macOS stock), so no `mapfile`, associative arrays or `${var,,}`; no `flock`, `timeout`, `readlink -f`, `stat -c`, `sed -i`, `date -d`; sizes from `wc -c <`, ages from epoch seconds the script stores, paths from `cd && pwd -P`, in-place edits via temp file and `mv`; every path list crosses a pipe NUL-separated; nothing is ever `eval`ed; awk written for both gawk and BWK awk; shebang `#!/usr/bin/env bash` because Termux has no `/bin/bash`. GNU versus BSD differences that matter: `find -newermt` exists on both, `touch -d @EPOCH` is GNU and `touch -t` is BSD, `date -r FILE` means mtime on both.
 
-- bash 3.2. macOS still ships it. No `mapfile`, no associative arrays, no `${var,,}`. `read -r -d ''` and `read -t` exist in 3.2.
-- No `flock`, `timeout`, `readlink -f`, `stat -c`, `sed -i`, `date -d`, `sha256sum`. BSD userland lacks or differs on each. Sizes come from `wc -c <`, ages from epoch seconds stored by the script, paths from `cd && pwd -P`, in-place edits through a temp file and `mv`.
-- Every list of paths crosses a pipe as NUL-separated (`-z`, `--pathspec-file-nul`, `read -d ''`). Names with newlines are legal.
-- Nothing is ever `eval`ed and no path is ever interpolated into a command string. Paths are arguments or pathspec files.
-- `awk` is written for both gawk and BWK awk: no `gensub`, no `length(array)`, no `-v` with escapes.
-- Shebang `#!/usr/bin/env bash`: Termux has no `/bin/bash`.
+## 7. Visibility instead of notifications
 
-## 7. Health and notifications
+No push notifications anywhere (R6). Three surfaces, all visible without a terminal.
 
-### 7.1 Client status
+**Conflict copies** sit beside the file with the losing device and time in the name. Delete the one you do not want, or rename the copy over the original. Exactly Dropbox.
 
-`.git/cubby/status`, written atomically (temp file and `mv`) at the end of every pass:
+**`CUBBY-ATTENTION.txt`** at the root of the folder, device-local, never synced. It exists only while something needs a person, and is deleted the moment nothing does, so a normal-looking folder means a normal sync. Contents, one block per item, plain sentences:
 
-```text
-updatedAt=2026-09-13T10:15:00Z
-state=ok                      # ok | offline | error
-healthy=true                  # false when state=error, or state=offline for longer than cubby.staleAfter
-lastOkAt=2026-09-13T10:15:00Z
-head=3f2a9c1
-ahead=0
-behind=0
-conflicts=2                   # tracked paths matching *.conflict-*, i.e. still unresolved by the user
-problems=1
-problem=Photos/link (symlink)
-lastError=
-```
+- paths excluded and why (5.5), with the rename that would fix each;
+- a held mass deletion and the command that releases it;
+- a file the merge is waiting on because an application holds it open;
+- a sync that has not succeeded for fifteen minutes while online, with the last error verbatim;
+- unpushed changes while offline for more than an hour;
+- a hand-run git command left the repository on another branch or mid-merge.
 
-Three states, **because** a laptop in a bag is not broken. `offline` is any ssh connection failure; it never notifies on its own and only turns `healthy=false` after `cubby.staleAfter`. `error` is everything else: a hook rejection, an unresolvable merge, a missing repository. `error` notifies after two consecutive passes, not one, because 6c is a legitimate one-pass race.
+Guards, because the attention file is the one thing Cubby writes into the folder: it is in `info/exclude`, the quarantine drops it, the server rejects the name at any depth, the watcher ignores it, it is written to `.cubby-attention.tmp` and renamed, and it is rewritten only when its bytes would change so the watcher never loops on it. Syncthing does the same with `.stignore` and its temp names (S43).
 
-Notifications go to `cubby.ntfyUrl` with `curl -fsS -m 10 -H "Title: Cubby DEVICE" -d TEXT`, and only on transitions recorded in `.git/cubby/state`:
+**`cubby status`** prints the status file for the terminal: state `ok | offline | attention`, last success, ahead, behind, conflicts present, excluded count, last error. On the server, `cubby status` prints per-device last seen and last push, and cron mails root when disk or staleness is wrong.
 
-- `healthy` false to true, and true to false, with `lastError`.
-- `conflicts` increased: "2 new conflict copies" with the first two names. A decrease is silent; the user cleaned up and knows.
-- The `problem` set changed: added paths listed.
-- Push rejected by the server: the hook's message verbatim.
+## 8. Big files
 
-The user resolves a conflict by deleting the copy they do not want, or by renaming the copy over the original. Both are plain file operations in any file manager, exactly like Dropbox's conflicted copies.
+No size cap (R12). The cap in revision 1 existed for three reasons; two are settings, one is advice.
 
-### 7.2 Server health
+### 8.1 What git does with a 20 GB file
 
-`/usr/local/lib/cubby/health`, from cron every ten minutes, state in `/var/lib/cubby/state`, notifications on transitions only to `NTFY_URL` from `cubby.conf`:
+| Operation | Behaviour with the settings in 4.5 and 5.3 |
+|---|---|
+| `add` | Streamed straight into a pack because `* -text ...` proves no conversion applies (*verified*). Without that line git reads the whole file into memory. Cost: one read to hash, one to compress. `core.compression 1` keeps the second cheap on incompressible media. |
+| `push`, `fetch` | Above `core.bigFileThreshold` no delta search happens; pack-objects streams the stored bytes. Full size on every changed version. Not resumable: a dropped connection restarts that push, which is why files over 256 MiB travel one per commit (5.4 step 6). |
+| `checkout` | Streamed to disk when no filter applies. Blobless clones fetch only the current version. |
+| `gc`, `repack` | `gc.bigPackThreshold 1g` keeps large packs instead of rewriting 100 GB weekly; cruft packs hold unreachable objects until `gc.pruneExpire`. |
+| Disk | Two copies per device: the file and its compressed blob. Every version ever on the server. |
 
-| Check | Threshold | Because |
-|---|---|---|
-| Free space on the filesystem holding `/srv/cubby` | below `DISK_MIN_FREE_PCT` (default 10) | A full disk fails every push; the clients would report `error`, but the fix is on the server. |
-| `git fsck --connectivity-only` | daily, by stamp file | Cheap, catches missing objects. |
-| `git fsck` | weekly, by stamp file | Full integrity. A bad disk shows up here before it shows up on a client. |
-| Mirror age | if `/var/lib/cubby/mirror-ok` (touched by the mirror host, 8.2) is older than `MIRROR_MAX_AGE` | Pull-based mirrors fail silently by definition; the server has to notice the silence. Optional, only when 8.2 is set up. |
-| Last push | none | Quiet is not a failure. Recorded in status output only. |
+Platform floors: Linux, macOS and 64-bit Android are fine. Windows is LLP64 and objects over 4 GiB were broken for years; fixes landed in git 2.55 and 2.56 (S13 to S16). Require Git for Windows 2.56 or newer and run the 20 GB round-trip test in 14 before trusting it. 32-bit Android builds share the Windows class of bugs. FAT-formatted storage caps files at 4 GiB regardless.
 
-### 7.3 Fast wake (optional)
+**Do not raise `core.bigFileThreshold` to get deltas.** Delta search needs both versions and a delta index in memory, `pack.windowMemory` only shrinks the candidate window, and raising the threshold also disables the streaming paths, so `add` and `checkout` would need the file's size in RAM. Revision 1's option for churny files is withdrawn.
 
-`NTFY_WAKE_URL` on the server and `cubby.ntfyWakeUrl` on each device, pointing at one private topic. `post-receive` posts the pushing device's name; every loop holds `curl -sN topic/raw` open and runs a pass on any non-empty line. Remote changes then land in about a second instead of at the next tick. **Because** the server cannot connect to the clients and the clients hold no long-lived ssh session; a public pub-sub channel with a random topic name is the cheapest possible push. The payload is a device name, never a path or content. Anyone who dislikes the timing metadata leaving the LAN leaves both settings empty or self-hosts ntfy; the design does not depend on it.
+### 8.2 Constantly changing big files
 
-## 8. History, restore, offsite
+VM images, live databases, mail stores, editor caches. Every version is stored whole, so a 10 GB image saved daily is 300 GB a month. In order of simplicity:
 
-### 8.1 Restore
+1. **Exclude them.** Add the path to `info/exclude`. Their vendors already say not to sync them live.
+2. **Sync an export.** A daily dump into the folder from the owning device. Versions become meaningful and bounded.
+3. **A separate repository with history expiry** for a whole folder of such files: `~/Cubby/Bulk` backed by `bulk.git`, one more `case` arm in the dispatcher, monthly re-rooting (9.3). `main.git` keeps everything forever.
 
-History is the repository (R4). No snapshot tree, no retention tiers, no pruning logic: every version of every file, forever, on the server.
+The settle rule (5.4 step 2) already means a running VM image is never committed mid-write; it syncs when it stops, and the attention file says "still changing" while it runs.
 
-From any device:
+## 9. History, restore, mirror, expiry
+
+### 9.1 Restore
+
+History is the repository (R4). Plain git, from any device:
 
 ```sh
-git -C ~/Cubby log --oneline -- 'Reports/Q3.docx'                 # versions of one path
-git -C ~/Cubby checkout 3f2a9c1^ -- 'Reports/Q3.docx'              # bring back the version before a commit
-git -C ~/Cubby log --diff-filter=D --name-only --oneline           # everything ever deleted, when, by which device
-git -C ~/Cubby checkout "$(git -C ~/Cubby rev-list -1 --before='2026-09-12 18:00' main)" -- 'Reports/'   # a folder as it was
+git -C ~/Cubby log --oneline -- 'Reports/Q3.docx'                        # versions of a path
+git -C ~/Cubby checkout 3f2a9c1^ -- 'Reports/Q3.docx'                     # the version before that commit
+git -C ~/Cubby log --diff-filter=D --name-only --oneline                  # everything ever deleted, by whom, when
+git -C ~/Cubby checkout "$(git -C ~/Cubby rev-list -1 --before='2026-09-12 18:00' main)" -- 'Reports/'
 ```
 
-The next pass commits the restore like any other change and every device receives it. On a blobless clone the old blob is fetched on demand. From the server: `git -C /srv/cubby/main.git show 3f2a9c1:Reports/Q3.docx > /tmp/Q3.docx`. Restore never pauses anything and never needs root; today's `restore.sh`, its symlink checks, its container pause and its staging directory are gone because the operation is a git checkout inside a normal work tree.
+The next pass commits the restore like any change. On a blobless clone the old blob is fetched on demand. From the server: `git -C /srv/cubby/main.git show 3f2a9c1:Reports/Q3.docx > /tmp/Q3.docx`. No pausing, no root, no staging directory.
 
-### 8.2 Offsite
+### 9.2 Mirror
 
-Pull-based, as today (R8). On another machine with its own key in `/etc/cubby/authorized_keys` under the name `mirror`:
+Pull-based (R7). On another machine, with the key named `mirror` and role `ro`:
 
 ```sh
 git clone --mirror cubby@server:main.git /srv/cubby-mirror.git
-git -C /srv/cubby-mirror.git config fetch.fsckObjects true
-git -C /srv/cubby-mirror.git config core.logAllRefUpdates true
-git -C /srv/cubby-mirror.git config gc.reflogExpire never
-git -C /srv/cubby-mirror.git config remote.origin.fetch 'refs/heads/*:refs/heads/*'
-# cron, hourly:
-git -C /srv/cubby-mirror.git fetch -q origin && ssh cubby@server true   # the second call is the liveness stamp, see below
+cd /srv/cubby-mirror.git
+git config fetch.fsckObjects true
+git config core.logAllRefUpdates true
+git config gc.reflogExpire never
+git config remote.origin.fetch 'refs/heads/*:refs/heads/*'     # no plus: a rewritten main is refused, loudly
+# cron, every 15 min:  git remote update --prune && git fsck --connectivity-only --no-dangling
 ```
 
-**Why the refspec is changed.** `--mirror` sets `+refs/*:refs/*`, and the plus means "force". A compromised or corrupted server publishing a rewritten `main` would then be copied over the good history. Without the plus, a non-fast-forward update is refused and the fetch fails loudly. The server denies non-fast-forwards to clients; the mirror denies them to the server.
+`--mirror` sets a forced refspec; without the plus, a compromised or corrupted server publishing a rewritten `main` fails the fetch instead of overwriting the good copy. The mirror's cron mails its own root on failure. The server holds no credential.
 
-**Liveness stamp.** The mirror key's forced command in `shell` gets one extra allowed command, `true`, which the dispatcher turns into `touch /var/lib/cubby/mirror-ok`; `health` reports when the stamp goes stale. The server still holds no credential to the mirror and cannot delete it (R8).
+### 9.3 Expiry
 
-Push-based is possible (`post-receive` running `git push --mirror offsite`) and documented as second choice for the same reason as today: it puts a credential on the server.
-
-### 8.3 Purging
-
-History is permanent by design, so a secret or a 10 GB ISO committed by mistake stays in every clone. The escape is a history rewrite and it is deliberately painful: temporarily unset `receive.denyNonFastForwards`, rewrite with `git filter-repo` or `git filter-branch`, force-push, re-clone every device. It is written down as the procedure and never automated. **Because** anything that could do it from a client is exactly what R5 forbids.
-
-### 8.4 Growth
-
-The server grows by the compressed size of every new version. Text deltas well; media does not delta and is rarely edited, so growth is roughly additions. `git count-objects -vH` reports it and `health` includes it. The client-side cost is in section 12. Target for one repository: 100k files and 100 GB of current content. Beyond that, split into several repositories, which needs one more `case` arm in `shell` and one more `main.git` per tree; nothing else in the design is per-repository.
-
-## 9. Optional: one-way rsync trees
-
-Not built in phase 1. Added only when a folder meets one of these: single files over `cubby.maxFileSize`, mtimes that matter (a photo library), transfers over links so bad that resumability matters, or content so large that history is unwanted.
-
-**Decision.** Such a folder is an rsync target with one writer and any number of readers, jailed per key by `rrsync`, snapshotted on the server with `rsync --link-dest`.
-
-**Because** one-way transfer needs no memory of the last state, so plain rsync is complete and correct here, preserves mtimes, resumes partial files (`--partial`), and is the literal "rsync plus keys" answer wherever the bidirectional requirement does not apply.
-
-The dispatcher grows one arm:
+History is permanent by design in `main.git`. For a `bulk.git` that must forget, a documented monthly server job re-roots history, and clients need no re-clone because a fast-forward-only client never needs ancestry beyond the tip it knew. *Verified by the research pass* on a scratch repo:
 
 ```sh
-    "rsync --server"*)
-        case "$2" in
-            media=rw) exec rrsync /srv/cubby/media ;;
-            media=ro) exec rrsync -ro /srv/cubby/media ;;
-            *) echo "cubby: this key has no rsync access" >&2; exit 1 ;;
-        esac ;;
+# server, local, not a push: a root commit holding today's tree, then main points at it
+cd /srv/cubby/bulk.git
+tip=$(git rev-parse main)
+root=$(git commit-tree -m "history expired $(date -u +%F)" "$tip^{tree}")
+git update-ref refs/heads/main "$root" "$tip"
+git reflog expire --expire=now --all && git gc --prune=now
 ```
 
-with the key line `restrict,command="/usr/local/lib/cubby/shell phone media=rw"`. The phone runs `rsync -a --partial --no-delete Camera/ cubby@server:Camera/` from the same loop; a desktop reader runs `rsync -a --delete cubby@server:Camera/ Camera/`. Deletions from the writer are the operator's choice per tree: a camera roll is usually append-only so the phone may delete locally and the server keeps everything.
-
-Snapshots, from cron on the server, are what `backup.sh` does today without the container:
-
-```sh
-ts=$(date -u +%Y-%m-%dT%H%M%SZ)
-rsync -a --delete --link-dest=/srv/cubby/snapshots/latest /srv/cubby/media/ "/srv/cubby/snapshots/.incoming-$ts/" \
-    && mv "/srv/cubby/snapshots/.incoming-$ts" "/srv/cubby/snapshots/$ts" \
-    && ln -sfn "$ts" /srv/cubby/snapshots/latest
-ls -d /srv/cubby/snapshots/????-??-??T??????Z | head -n -"$KEEP" | xargs -r rm -rf
-```
-
-Retention is "keep the newest N"; the tiered hourly/daily/weekly scheme is dropped because git history covers the tree that changes often and media trees change by addition. The snapshot directory is never inside `/srv/cubby/media`, so no key reaches it (R5). Offsite: `rsync -aH server:/srv/cubby/snapshots/ snapshots/` from the mirror host, pull-based, hardlinks intact.
+Client, in the pass, when `git merge-base --is-ancestor LASTKNOWN origin/main` fails: find `root=$(git rev-list --max-parents=0 origin/main)`; require `root^{tree}` to equal `LASTKNOWN^{tree}` (the expiry preserved the tree exactly, so this holds even if others pushed since); then `git rebase --onto "$root" LASTKNOWN` replays local unpushed commits onto the new root with their trees preserved byte for byte, and the normal merge continues. If the trees differ the pass stops with an attention entry, because then it is not an expiry. The mirror is told explicitly, once, to accept the new root for that repository.
 
 ## 10. Security model
 
-| Threat | What it can do | What stops the rest |
+| Threat | Can | Cannot, and why |
 |---|---|---|
-| A device's key is stolen | Read the whole tree and its history. Push deletions and garbage. Push packs up to `receive.maxInputSize` repeatedly. | Cannot rewrite history (`denyNonFastForwards`), cannot delete `main`, cannot reach other repositories, a shell, forwarding or the snapshots. Every push is attributed to the device name in the log. Recovery is one `sed` to revoke and a `git checkout` on any device to undo the content. Disk exhaustion is caught by `health`. |
-| The server is compromised | Read everything. Serve rewritten history. | Clients verify objects (`transfer.fsckObjects`). The mirror refuses non-fast-forward refs (8.2) and holds the good history; the server has no credential to it. Encryption at rest is out of scope, as today. |
-| A malicious or buggy client pushes hostile content | Filenames, attributes, ignore files, hooks. | Nothing synced is ever executed (R12). `info/attributes` outranks in-tree `.gitattributes`; in-tree `.gitignore` is not consulted (5.4 step 3); hooks are not part of the work tree; `core.hooksPath` is pinned. Paths are only ever arguments or NUL-separated pathspec files. `.git`-like names are refused by fsck on receive. |
-| A client fills the tree with case collisions or Windows-illegal names | Break checkout on other platforms. | Excluded on the client, rejected on the server (4.6, 5.5). |
-| Network attacker | MITM the first connection. | Host key pinned at setup by fingerprint comparison, as today; `StrictHostKeyChecking=yes` afterwards. |
-| Operator mistake on the server | `rm` a ref, bad `gc`. | Reflog kept forever, weekly fsck, mirror. |
-
-What the design does not defend: a device that is compromised while its user is logged in has everything that user has, on every sync tool ever built.
+| Stolen device key | Read the tree and history. Push deletions and garbage. Fill the disk over time. | Rewrite or delete `main` (`denyNonFastForwards`, `denyDeletes`). Reach a shell, forwarding, another repo or `git-upload-archive` (dispatcher). Alter hooks or config (root-owned, `hooksPath` outside the repo). Hide: every connection is named in the log. Recovery: one `sed` and a `git checkout` on any device. Disk is watched by cron. |
+| Compromised server | Read everything. Serve rewritten history. | Overwrite the mirror (non-forced refspec, 9.2). Feed clients corrupt objects (`transfer.fsckObjects`). Encryption at rest is out of scope, as today. |
+| Hostile content pushed by a client | Filenames, attributes, ignore files, hooks. | Run anything: R13, nothing synced executes; `info/attributes` outranks in-tree `.gitattributes`; in-tree `.gitignore` is never consulted; hooks are not in the tree and `hooksPath` is pinned; paths are only ever arguments or NUL-separated pathspec files; `.git` look-alikes refused by fsck and the protect settings. |
+| Client breaking other platforms | Case collisions, illegal names, symlinks. | Excluded at the source, rejected by the server (5.5, 4.6). |
+| Network attacker | First-connection MITM. | Host key pinned by fingerprint at setup, `StrictHostKeyChecking=yes` after. |
+| Operator mistake | A bad `gc`, a deleted ref. | Reflog kept forever, weekly and monthly fsck, mirror. |
 
 ## 11. Failure catalogue
 
-Where each failure is detected, what happens on its own, and what a person must do.
-
 | Failure | Detected by | Automatic | Manual |
 |---|---|---|---|
-| Server unreachable | fetch or push fails with ssh error (5.4 step 6, 7) | `state=offline`, retry every tick, no notification until `staleAfter` | none |
-| Two devices push at once | non-fast-forward rejection (step 7) | fetch, merge, push again, three attempts per pass | none |
-| Same file edited on two devices | merge conflict (step 6b) | conflict copy beside the file, notification | pick one, delete the other |
-| File deleted here, edited there | stage 3 only (5.5) | edited version restored | none |
-| Pass killed mid-merge | `MERGE_HEAD` at preflight (step 1) | resolver runs first, or `merge --abort` | none |
-| Pass killed mid-git | stale `index.lock` at preflight | removed after ten minutes when no lock holder | none |
+| Server unreachable | fetch or push ssh error | `offline`, retry every tick, attention only after an hour with unpushed changes | none |
+| Two devices push at once | non-fast-forward | fetch, merge, push again, five attempts | none |
+| Same file edited on two devices | conflict (7b) | server's version keeps the name, copy beside it | pick one |
+| Deleted here, edited there | stage 3 only | edited version restored | none |
+| File still being written | settle rule | waits one pass | none |
+| File held open by an application | writability probe (7a) | merge skipped this pass, attention "waiting on" | close it, or nothing |
+| Pass killed mid-merge | `MERGE_HEAD` at preflight | resolver runs, or `merge --abort` | none |
+| Pass killed mid-git | `index.lock` | removed after an hour when no git process is alive | none |
 | Loop killed | service manager | restart within five seconds | none |
-| Stale Cubby lock after crash | dead pid and age (5.8) | removed | none |
-| File changed between commit and merge | merge refuses to start (6c) | next pass | none |
-| Symlink, nested repo, huge file, bad name | quarantine (5.5) | excluded, listed in status, notified once | rename, move out, or accept |
-| Manual `git commit` of a huge file | hook rejection (step 7) | unpushed commits squashed, offender excluded, pushed | none |
-| Manual `git checkout` of a branch or commit | preflight | `error`, nothing pushed | `git checkout main` |
-| `.git` deleted by the user | preflight | `error`, notified | `cubby setup` again |
-| Server disk full | push fails on the client; `health` on the server | clients `error` after two passes; server notifies once | free space |
-| Server repo corruption | weekly `fsck`, `transfer.fsckObjects` on every client fetch | notified; clients refuse bad objects | restore from mirror |
-| Mirror stops pulling | stale liveness stamp | notified | fix the mirror host |
-| Case-insensitive collision created on Linux | quarantine; server backstop | new name excluded | rename |
-| Key revoked while a client is mid-push | push fails | `error` with the ssh message | intended |
-| Host key rotated | `StrictHostKeyChecking=yes` fails | `error`, notified with the ssh message | re-pin on each device with `cubby setup --repin` |
-| inotify watch limit | `inotifywait` exits at start | timer only, logged once | raise `fs.inotify.max_user_watches` or ignore |
-| Android kills Termux | nothing runs | Termux:Boot and battery settings as today | as today |
-| Clock wrong on a device | nothing breaks; commit dates and conflict names are cosmetic | none | none |
-| Very large first clone interrupted | checkout stops | blobless clone resumes at the next batch (5.2) | rerun `git checkout main`, or seed with `git bundle` over USB |
+| Stale Cubby lock | dead pid, no git, age | removed | none |
+| Symlink, nested repo, illegal name, case collision | quarantine | excluded, attention entry | rename or move out |
+| Manual commit of a bad path | hook rejection (9) | path quarantined, fix committed, pushed | none |
+| Manual `git checkout` elsewhere | preflight | attention, nothing pushed | `git checkout main` |
+| Folder drive unmounted | pointer file missing | pass stops, attention | mount it |
+| Mistaken mass deletion | guard (step 4) and hook | deletions held, everything else syncs | `cubby accept-deletions` or put files back |
+| Server disk full | push fails; cron `health` | attention on devices; mail to root | free space |
+| Server repo corruption | monthly fsck; `transfer.fsckObjects` on every client fetch | mail; clients refuse bad objects | restore from mirror |
+| Mirror stops pulling | its own cron fails | mail on the mirror host | fix it |
+| Key revoked mid-session | next authentication | session ends within the `wait` cap | intended |
+| Host key rotated | `StrictHostKeyChecking` | attention with the ssh message | `cubby setup --repin` on each device |
+| inotify watch limit or queue overflow | `inotifywait` exit; silent overflow | timer and the ten-minute full pass | raise `max_user_watches` or ignore |
+| Android kills Termux | nothing runs | Termux:Boot, wake lock, as today | as today |
+| Interrupted first clone | checkout stops | blobless clone resumes at the next batch | rerun `git checkout main` |
+| Interrupted push of a huge file | push fails | that one commit is retried | none |
+| History expired on a bulk repo | ancestry check | rebase onto the new root when trees match | none, or attention if they do not |
 
 ## 12. What is lost
 
-Plainly, against Mutagen and the current stack.
+- **Empty directories.** git has no representation. A folder appears elsewhere when it holds a file.
+- **Symlinks.** Excluded. Mutagen carried them.
+- **Instant everything.** Local changes take about three seconds where a watcher exists, remote changes about a second via `wait`; the timer-only fallback is a minute.
+- **Resuming a push of one enormous file.** git restarts it. One commit per big file bounds the damage.
+- **Disk.** Two copies of the current content per device with a blobless clone.
+- **Permanent history in the main repository.** A secret committed by mistake stays in every clone unless the expiry procedure (9.3) is applied to that repository, which is deliberately manual.
+- **SFTP browsing from a phone app.** The server speaks only git.
+- **A browsable snapshot tree.** `git log` and `git checkout` replace the dated directories.
+- **Live databases and VM images.** Section 8.2.
 
-- **Modification times.** git records none. A checked-out file carries the time of checkout. File managers sorting by date, and anything that trusts mtime, see the sync time. Photos keep their EXIF dates, documents do not keep anything. This is the single largest user-visible regression and the strongest reason section 9 exists for media.
-- **Empty directories.** git does not track them. A folder appears on other devices when it holds a file.
-- **Symlinks.** Not synced (5.5). Mutagen carried them.
-- **Executable bits on Windows and Android.** Unchanged from today; those filesystems never had them.
-- **Instant propagation of remote changes.** Mutagen held a session open. Cubby polls at `cubby.interval` unless the ntfy wake is configured (7.3).
-- **Resumable transfer of one huge file.** rsync resumes, git restarts the push. Hence the file cap and section 9.
-- **Disk on each device.** Work tree plus compressed current blobs: roughly two copies of the current content with a blobless clone, every version ever with `--full`.
-- **Permanent history.** A purge means rewriting history and re-cloning every device (8.3).
-- **A browsable snapshot tree.** `backups/2026-09-03T030000Z/…` in a file manager becomes `git log` and `git checkout`.
-- **SFTP browsing from a phone app.** The server speaks only git. Section 16 has the optional read-only view.
-- **Live databases and VM images.** Every save is a new full blob; a 20 GB image edited daily is a repository nobody wants. Dropbox gives the same advice for the same reason.
-
-What is gained, for the record: no Docker, no Mutagen, no PowerShell, no VBS beyond the launcher, no key watcher, no second container, no retention algorithm, no restore script with symlink checks, no marker files travelling through the tree, no trust decision about a URL found in a synced file. Atomic multi-file changes, rename-aware transfer, per-path history on every device, selective sync, offline commits, server-side validation of every path, and a mirror that cannot be overwritten by the thing it mirrors.
+Gained: no Docker, no Mutagen, no PowerShell, no key watcher, no second container, no retention algorithm, no restore script guarding against planted symlinks, no marker files travelling through the tree, no notification service. Atomic multi-file changes, rename-aware transfer, per-path history on every device, selective sync with `git sparse-checkout`, offline commits, restored modification times, server-side validation of every path, a mirror that cannot be overwritten by the thing it mirrors, and a test suite.
 
 ## 13. Migration
 
-Cutover, not coexistence. Mutagen and git on the same folder would fight over `.git`.
+Cutover, not coexistence: Mutagen and git on the same folder would fight over the pointer file.
 
-1. On every device: `mutagen sync flush Cubby`, then `mutagen sync pause Cubby`. Wait until `mutagen sync list` shows no pending changes anywhere.
-2. On the server: `docker compose stop`. Do not delete anything. `shared/` is the import source and the rollback.
-3. Run `server/install.sh`. Then import, once, from the old tree excluding the marker directory:
+1. On every device: `mutagen sync flush Cubby`, then `mutagen sync pause Cubby`. Confirm no pending changes anywhere.
+2. On the server: `docker compose stop`. Delete nothing; `shared/` is the import source and the rollback.
+3. `server/install.sh`. Import once, excluding the marker directory, and run the hook's rules over the result before any client sees it:
    ```sh
    git --git-dir=/srv/cubby/main.git --work-tree=shared add -A -- . ':!.cubby'
    git --git-dir=/srv/cubby/main.git --work-tree=shared commit -q -m "import from Mutagen tree"
+   /usr/local/lib/cubby/hooks/check-tree main     # pre-receive's rules over any ref; fix shared/ and re-import on findings
    ```
-   The pre-receive rules do not run on a local commit, so run the same checks by hand: `server/check-tree main` is `pre-receive` factored to take a ref, and it lists symlinks, bad names and collisions in `shared/` before any client sees them. Fix them in `shared/` and re-import.
-4. Add every device's existing `~/.ssh/cubby.pub` to `/etc/cubby/authorized_keys` under its old name. The keys do not change.
-5. On each device, without re-downloading: `cubby setup --adopt ~/Cubby`. It runs `git init`, sets the remote and config from 5.3, `git fetch`, `git reset -q origin/main` (mixed: the index becomes the server's tree, the work tree is untouched), then `git status --porcelain -z`. An empty status means the local copy matched the server exactly. A non-empty status lists what differed; the user reads it before the first pass, because the first pass will commit those differences as this device's changes. Files present on the server and missing locally would be committed as deletions, so `--adopt` refuses to continue if any `D` entries appear and prints the list; `git checkout -- path` brings them back, or the user confirms the deletions with `--adopt --accept-deletions`.
-6. `cubby service install ~/Cubby`. Remove the Mutagen daemon registration and, on Windows, the `Cubby` login entry `daemon.ps1 -Register` wrote.
-7. Watch `cubby status` on every device for a day.
-8. After a week: `mutagen sync terminate Cubby` on every device, `docker compose down`, keep `backups/` until its content is older than anything anyone would restore, then delete `shared/`, `config/`, `keys/`, `offsite/`.
+4. Add every device's existing `~/.ssh/cubby.pub` to `/etc/cubby/authorized_keys` under its old name.
+5. On each device, `cubby setup --adopt ~/Cubby`: init with the separate git dir, remote and config from 5.3, fetch, `git reset -q origin/main` (mixed: index becomes the server's tree, work tree untouched), then show `git status --porcelain -z`. Empty means the copy matched. Any `D` entry means files the server has and this device lacks; `--adopt` refuses to continue and lists them, because the first pass would commit them as deletions. `git checkout -- path` brings them back, or `--adopt --accept-deletions` confirms.
+6. `cubby service install ~/Cubby`. Remove the Mutagen daemon registration and, on Windows, the login entry `daemon.ps1 -Register` wrote.
+7. Watch `cubby status` and the folders for a day.
+8. After a week: `mutagen sync terminate Cubby` everywhere, `docker compose down`, keep `backups/` until nothing in it is worth restoring, then delete `shared/`, `config/`, `keys/`, `offsite/`.
 
-Rollback before step 8: `docker compose up -d`, `mutagen sync resume Cubby` on each device. `shared/` still holds the tree as of step 2; changes made through git since then are copied into it from any client's work tree with `rsync -a --exclude .git`, once.
+Rollback before step 8: `docker compose up -d`, `mutagen sync resume Cubby`. Changes made through git since step 2 are copied into `shared/` from any device's folder once with `rsync -a --exclude .git`.
 
 ## 14. Tests
 
-`tests/` runs with bash, git and a temp directory; no sshd is needed for most of it because hooks run on pushes to a `file://` remote too. `shellcheck` on every script. CI runs the suite on Ubuntu, macOS (bash 3.2, BSD tools) and Windows (Git Bash).
+`tests/` runs with bash, git and a temp directory. Hooks fire on pushes to a `file://` remote, so most of it needs no sshd. `shellcheck` on every script. CI on Ubuntu, macOS (bash 3.2, BSD tools) and Windows (Git Bash).
 
 Server:
 
-- Every 4.6 rule rejects, with the expected message, and a fixed follow-up commit is accepted. Includes the "bad name in an intermediate commit, fixed in the final tree" case and the "huge blob no longer referenced" case.
-- `denyNonFastForwards`, `denyDeletes`, other refs refused.
-- `shell` with each whitelisted `SSH_ORIGINAL_COMMAND`, with `git-upload-pack '/etc'`, with `git-upload-archive`, with a shell command, with empty. Run directly, no sshd.
-- `install.sh` twice on a fresh Debian container: second run changes nothing (`diff -r` of the results).
+- every 4.6 rule rejects with its message, and a fixed follow-up commit is accepted; a bad name in an intermediate commit fixed in the final tree passes;
+- non-fast-forward, deletion and other refs refused; `config` unchanged after a hostile push attempt;
+- the dispatcher with each allowed command, with `git-upload-pack '/etc'`, `git-upload-archive`, a shell string, empty, and with a key not in the file; `wait` returns on a ref move and at the cap; the `ro` role cannot push;
+- `install.sh` twice on a fresh Debian container changes nothing the second time.
 
-Client, each as a scenario with two clones of one bare repo:
+Client, two or more clones of one bare repository:
 
-- Plain change propagates. Deletion propagates. Rename of a large file transfers no blob (measured with `GIT_TRACE_PACKET`).
-- Both modify one file: exactly one conflict copy, same final tree in both clones after two passes each, copy content equals the loser's version.
-- Modify/delete and delete/modify: the modified version survives.
-- Add/add with different content, rename/rename, directory/file.
-- Same conflict resolved simultaneously by both clones converges without a second conflict.
-- Kill the pass after `merge` starts (inject `exit` after `git merge` via a test hook variable); next pass resolves and the tree is consistent.
-- Stale `index.lock` older than ten minutes is removed; a fresh one is respected.
-- Stale lock directory with a dead pid is removed; with a live pid the pass exits 1.
-- Symlink, nested repo, oversize file, `CON.txt`, `a?b`, trailing dot, case collision: excluded, listed in status, tree still syncs. Server backstop tested by committing the same by hand and pushing.
-- Manual commit of an oversize file: hook rejection triggers squash, the second push succeeds, the offender is in `problems`.
-- Concurrent pushes: two clones push in a loop for a minute; no pass ends in error, final trees identical.
-- Blobless clone: merge with a merge base older than the current checkout succeeds; `checkout` of a historical blob fetches it.
-- In-tree `.gitignore` ignoring `build/`: `build/` syncs anyway. In-tree `.gitattributes` with `text=auto`: no CRLF conversion happens on Windows.
-- HEAD on another branch: pass exits 2 and pushes nothing.
-- `status` file is always complete and never observed half-written (reader loop during passes).
-- Notifications: a fake ntfy (`nc -l` or a tiny `python3 -m http.server` in tests only) receives exactly one message per transition, zero for offline under `staleAfter`, zero for a single 6c pass.
-- Conflict name: extension preserved, 200-byte truncation, same-second uniqueness.
+- change, deletion and rename propagate; a renamed big file transfers no blob;
+- both modify one file: one copy, identical trees after two passes each, copy content equals the loser's;
+- modify/delete, delete/modify, add/add, directory/file; the same conflict resolved by two devices at once converges without a second conflict;
+- kill the pass after `git merge` starts; next pass resolves; kill it after commit and before push; nothing lost;
+- stale `index.lock` older than an hour with no git process is removed, a fresh one is respected; a live lock directory makes the pass exit 1;
+- symlink, nested repo, `CON.txt`, `a?b`, trailing dot, case collision: excluded, listed, everything else syncs; server backstop tested by committing the same by hand;
+- a file made unwritable: the probe skips the merge, nothing in the work tree changes, the attention file names it, the merge proceeds when it is writable again; the same with `git merge --ff-only` and `git checkout` to document why they are not used;
+- settle rule: a file touched within two seconds waits; a future mtime does not;
+- mass deletion held; `accept-deletions` releases with the trailer; the hook accepts the trailer and rejects without it;
+- in-tree `.gitignore` excluding `build/`: it syncs; in-tree `.gitattributes` with `text=auto`: no conversion on Windows;
+- author date equals newest mtime; after merge, mtimes on the other clone match within the settle window;
+- HEAD on another branch: exit 2, nothing pushed; `MERGE_HEAD` at start: resolved;
+- attention file: created exactly when an item appears, deleted exactly when the last one clears, never staged, never triggers a pass on its own rewrite;
+- big files: a 3 MB file above a 1 MiB threshold lands in a pack, not a loose object, with the attributes line; a 5 GB file round-trips on every CI platform, 20 GB on a nightly Linux and Windows run;
+- expiry: re-root a bulk repo; a client with two unpushed commits rebases and pushes; a client whose last-known tree differs stops with attention;
+- **convergence fuzz**: four clones perform random creates, edits, renames, deletes and mass deletes for an hour, with induced conflicts, killed passes, locked files and an unmounted root; final trees byte-identical; every blob any clone ever committed is reachable from `main` history or present as a conflict copy.
 
-Integration, in a throwaway container with sshd: setup from scratch on a client, key add, sync, key revoke cuts the next pass, host key rotation is reported as `error` with the ssh text.
+Integration in a throwaway container with sshd: setup from scratch, key add, sync, revoke cuts the next pass, host key rotation reported.
 
 ## 15. Implementation order
 
-Each milestone leaves a working system for the platforms it covers.
+1. **Server.** `install.sh`, dispatcher, hooks, `check-tree`, `health`, sshd drop-in, hook tests over `file://`.
+2. **Client core.** `setup`, `sync` steps 1 to 10 with quarantine, guard, resolver, probe and mtime restore, `status`, logs, Linux, timer only. Scenario tests.
+3. **Loop and boot.** Producers, `wait`, `service install` for Linux, macOS, Windows. CI on three platforms.
+4. **Attention file** and `accept-deletions`.
+5. **Android.**
+6. **Migration.** `--adopt`, section 13 as a README checklist, a dry run on a copy of the real tree.
+7. **Mirror.**
+8. **Fuzz test** running nightly.
+9. **Bulk repository and expiry**, only when a folder needs it.
 
-1. **Server.** `install.sh`, `shell`, hooks, `check-tree`, `health`, sshd drop-in, hook tests over `file://`. One evening of work, and the whole R2, R5 story is done.
-2. **Client core.** `cubby setup`, `cubby sync` steps 1 to 8 with quarantine and resolver, `status`, logs, Linux only, timer only. The scenario tests in 14.
-3. **Loop and services.** `cubby loop` with the three producers, `cubby service install` for Linux, macOS, Windows. CI on the three platforms.
-4. **Notifications and health.** 7.1, 7.2, 7.3.
-5. **Android.** `client/android/setup.sh` rewritten for git, separate git dir, media scan, runit.
-6. **Migration.** `--adopt`, section 13 as a checklist in the README, a dry run on a copy of the real tree.
-7. **Mirror.** 8.2 with the liveness stamp.
-8. **Optional trees.** Section 9, when a folder needs it and not before.
-
-New repository layout:
+Repository layout:
 
 ```text
-server/install.sh          idempotent root installer (4.9)
-server/sshd.conf           the Match block (4.3)
-server/shell               forced command (4.4)
-server/hooks/pre-receive   (4.6)
-server/hooks/post-receive  (4.7)
-server/check-tree          pre-receive's rules over any ref, for imports (13)
-server/health              cron health (7.2)
-server/snapshot            section 9, later
-server/cubby.conf.example
-client/cubby               the one script (5)
-client/install.sh          copies cubby into place, checks git and ssh versions
-client/exclude             (5.3)
-client/attributes          (5.3)
-client/run-hidden.vbs      unchanged
-client/android/setup.sh    (5.9)
-tests/
-README.md                  rewritten around the new commands
-REDESIGN.md                this file, kept until the README covers everything, then deleted
+server/install.sh           server/sshd.conf            server/shell
+server/hooks/pre-receive    server/hooks/check-tree     server/health
+client/cubby                client/install.sh           client/exclude           client/attributes
+client/run-hidden.vbs       client/android/setup.sh
+tests/                      README.md                   REDESIGN.md (deleted once the README covers everything)
 ```
 
 Deleted: `Dockerfile`, `docker-compose.yml`, `entrypoint.sh`, `authorized-keys.sh`, `on-key-change.sh`, `session.sh`, `backup/`, `client/*.ps1`, `client/linux/mutagen.service`, `.env.example`.
 
 ## 16. Deliberately not built
 
-- **A daemon that stays connected.** Sessions that last seconds are what make revocation trivial and the server stateless.
-- **Server-side checkout of the tree.** It doubles server disk and adds a second writer to reason about. If browsing on the server matters, `git show` and `git archive` exist. If an SFTP view for a phone app matters, it is a second sshd user with `ChrootDirectory` and `ForceCommand internal-sftp` over a read-only worktree refreshed by `post-receive`; it is documented as an extension, not built, because it reintroduces a path into the tree that is not a git push.
-- **Automatic text merging.** Correct for source code, wrong for a file sync (5.3).
-- **Tiered retention.** History is complete; there is nothing to tier.
-- **A web UI, users, permissions, sharing links, encryption at rest, LFS, a versions browser.** Cubby is one person's files on one person's hardware.
-- **Any binary.** If a requirement ever needs one, the answer is git-annex or Syncthing, not a Cubby binary.
+- **A daemon of ours.** Sessions of seconds, plus one idle `wait`, are what make revocation trivial and the server stateless.
+- **Server-side merging.** git merges. Our code names losers and decides what to stage.
+- **Automatic text merging.** Correct for source code, wrong for a file sync.
+- **Notifications.** The folder shows what needs attention. Cron mails root.
+- **Tiered retention on `main.git`.** History is complete; there is nothing to tier. Expiry exists only for a bulk repository and only by hand.
+- **Symlink placeholders, size caps, rsync side trees.** Each was in an earlier revision and each was more lines than the problem.
+- **A web UI, users, permissions, sharing links, encryption at rest.** One person's files on one person's hardware.
+- **Any binary.** If a requirement ever needs one, the answer is another tool, not a Cubby binary.
+
+## Appendix A: verified and unverified claims
+
+Reproduced on git 2.47.3, Linux, during this design:
+
+- `git hash-object -t tree /dev/null` gives the empty tree; `commit-tree` plus `update-ref` bootstraps `main`.
+- `git config receive.maxInputSize 4g` parses units (not used any more).
+- `* -merge` in `info/attributes` yields stages 1, 2, 3 with ours in the work tree; `git checkout --theirs` writes stage 3. In a bare repository `git merge-tree --write-tree` honours the same attributes (not used in the final design).
+- `git ls-files -o --exclude-from=FILE` lists files an in-tree `.gitignore` would hide and hides files in the given list.
+- `git add` of a file above `core.bigFileThreshold` is stored loose without `-text` or `autocrlf=false`, and goes straight to a pack with either.
+- `git checkout <commit>` exits 0 after "unable to unlink old", HEAD moved, stale file shown modified. `git merge --ff-only` exits 1, HEAD unchanged, other files partially written. `git merge --no-ff` and a real three-way merge exit 2 and change nothing.
+- `git update-ref REF NEW OLD` fails when the ref is not at OLD.
+- By the research pass: the re-root recipe, `git rebase --onto` preserving local trees, `ls-files -o` listing nested repositories as `dir/` and symlinks, `add -f --pathspec-from-file` staging them as gitlink and symlink.
+
+Not verified by anyone here, marked where they matter:
+
+- Git for Windows end-to-end handling of objects over 4 GiB in 2.56 (8.1); require and test.
+- Built-in fsmonitor on Linux since git 2.55 (S11); the timer covers its absence.
+- ssh under a Windows S4U task (`/NP`); the VBS fallback covers it.
+- inotify blindness on Termux shared storage; the phone polls regardless.
+- `skip-worktree` behaviour under merge; irrelevant since symlink placeholders were dropped.
+
+## Appendix B: sources
+
+Primary sources used by the research pass. Numbering as referenced above.
+
+- S1 git `core.*` config: https://git-scm.com/docs/git-config
+- S3 `receive.*`: https://git-scm.com/docs/git-config#Documentation/git-config.txt-receivedenyNonFastForwards
+- S4 quarantine on rejected pushes: https://git-scm.com/docs/git-receive-pack
+- S5 partial clone: https://git-scm.com/docs/partial-clone
+- S6 `gc.*`: https://git-scm.com/docs/git-gc
+- S7 partial and shallow clone trade-offs: https://github.blog/open-source/git/get-up-to-speed-with-partial-clone-and-shallow-clone/
+- S8 gitattributes, `-merge`, precedence: https://git-scm.com/docs/gitattributes
+- S9 pack and repack memory: https://git-scm.com/docs/git-repack
+- S10 fsmonitor daemon: https://git-scm.com/docs/git-fsmonitor--daemon
+- S11 git 2.55 release notes: https://raw.githubusercontent.com/git/git/master/Documentation/RelNotes/2.55.0.adoc
+- S13 Git for Windows large objects: https://github.com/git-for-windows/git/pull/2179
+- S16 git 2.56 release notes: https://raw.githubusercontent.com/git/git/master/Documentation/RelNotes/2.56.0.adoc
+- S18 sshd, authorized_keys options, ForceCommand precedence: https://man.openbsd.org/sshd
+- S19 sshd_config, Match keywords: https://man.openbsd.org/sshd_config
+- S20 Debian sshd_config: https://manpages.debian.org/trixie/openssh-server/sshd_config.5.en.html
+- S22 OpenSSH `safe_path`: https://raw.githubusercontent.com/openssh/openssh-portable/master/misc.c
+- S23 OpenSSH 7.2 release, `restrict`: https://www.openssh.org/txt/release-7.2
+- S25 Windows file naming: https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+- S28 `git ls-files` exclude options: https://git-scm.com/docs/git-ls-files
+- S30 Termux storage layout: https://github.com/termux/termux-packages/wiki/Termux-file-system-layout
+- S31 BSD find `-newermt`: https://man.freebsd.org/cgi/man.cgi?query=find&sektion=1
+- S33 `git add --pathspec-from-file`: https://git-scm.com/docs/git-add
+- S35 git-restore-mtime: https://github.com/MestreLion/git-tools/blob/main/git-restore-mtime
+- S36 push not resumable: https://docs.github.com/en/get-started/using-git/troubleshooting-the-2-gb-push-limit
+- S37 Syncthing conflicts and deletion rules: https://docs.syncthing.net/users/syncing.html
+- S38 Dropbox conflicted copy: https://help.dropbox.com/organize/conflicted-copy
+- S42 Dropbox case conflict: https://help.dropbox.com/organize/case-conflict
+- S43 Syncthing ignore and temp names: https://docs.syncthing.net/users/ignoring.html
+- S44 inotify limits: https://watchexec.github.io/docs/inotify-limits.html
+- S45 inotify(7): https://man7.org/linux/man-pages/man7/inotify.7.html
+- S49 schtasks `/NP`: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create
+- S50 Log on as a batch job: https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/log-on-as-a-batch-job
+- S52 Termux:Boot: https://github.com/termux/termux-boot/blob/master/README.md
+- S53 phantom process killer: https://github.com/termux/termux-app/issues/2366
+- S54 racy-git: https://git-scm.com/docs/racy-git
+- S59 git replace: https://git-scm.com/docs/git-replace
+- S61 prior art: SparkleShare issues 519, 111, 1744, 335 at https://github.com/hbons/SparkleShare/issues ; https://github.com/rmayr/dvcs-autosync ; https://github.com/gitwatch/gitwatch ; https://github.com/simonthum/git-sync ; https://git-annex.branchable.com/direct_mode/
+- S63 APFS normalization: https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/APFS_Guide/FAQ/FAQ.html
