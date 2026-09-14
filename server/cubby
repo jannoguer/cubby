@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# Cubby server: one always-on Syncthing peer that receives, redistributes and
+# versions the folder. Everything talks to the local Syncthing REST API.
+#
+#   cubby install              packages, user, service, folder, firewall, cron (root, idempotent)
+#   cubby configure            re-apply options, GUI and folder settings (part of install)
+#   cubby add NAME DEVICE-ID   add a device and share the folder with it
+#   cubby remove NAME          revoke a device
+#   cubby status               devices, last seen, folder state
+#   cubby health               print only what is wrong; cron mails root when it prints
+#
+# Settings, all overridable from the environment:
+#   CUBBY_HOME          /srv/cubby              home of the cubby user
+#   CUBBY_FOLDER        $CUBBY_HOME/Cubby       the synced folder
+#   CUBBY_STHOME        $CUBBY_HOME/.config/syncthing
+#   CUBBY_GUI           127.0.0.1:8384          admin UI, reach it over an ssh tunnel
+#   CUBBY_GUI_PASSWORD  prompted, or generated  first install only
+#   CUBBY_MAX_AGE_DAYS  365                     keep old versions this long, 0 forever
+#   CUBBY_DISK_PCT      85                      health: warn at this usage
+#   CUBBY_STALE_DAYS    7                       health: warn when a device has been away this long
+set -euo pipefail
+
+user=cubby
+home=${CUBBY_HOME:-/srv/cubby}
+folder=${CUBBY_FOLDER:-$home/Cubby}
+sthome=${CUBBY_STHOME:-$home/.config/syncthing}
+gui=${CUBBY_GUI:-127.0.0.1:8384}
+max_age_days=${CUBBY_MAX_AGE_DAYS:-365}
+disk_pct=${CUBBY_DISK_PCT:-85}
+stale_days=${CUBBY_STALE_DAYS:-7}
+folder_id=cubby
+service="syncthing@$user"
+
+die() { echo "cubby: $*" >&2; exit 1; }
+
+apikey() {
+    local key
+    key=$(sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' "$sthome/config.xml" 2>/dev/null | head -1)
+    [ -n "$key" ] || die "no API key in $sthome/config.xml; run: cubby install"
+    printf '%s' "$key"
+}
+
+# api METHOD PATH [JSON]. Prints the body; fails on HTTP errors.
+api() {
+    local method=$1 path=$2 body=${3-}
+    curl -fsS -X "$method" -H "X-API-Key: $(apikey)" -H 'Content-Type: application/json' \
+        ${body:+--data-binary "$body"} "http://$gui/rest/$path"
+}
+
+# api_code METHOD PATH: prints only the HTTP status, never fails.
+api_code() {
+    curl -sS -o /dev/null -w '%{http_code}' -X "$1" -H "X-API-Key: $(apikey)" "http://$gui/rest/$2" || true
+}
+
+wait_api() {
+    for _ in $(seq 1 60); do
+        [ "$(api_code GET system/status)" = 200 ] && return 0
+        sleep 1
+    done
+    die "Syncthing API not reachable at $gui"
+}
+
+folder_json() {
+    jq -n --arg path "$folder" --arg maxage "$((max_age_days * 86400))" '{
+        id: "cubby", label: "Cubby", path: $path,
+        type: "receiveonly",
+        rescanIntervalS: 3600, fsWatcherEnabled: true, fsWatcherDelayS: 10,
+        ignorePerms: true, autoNormalize: true, maxConflicts: -1,
+        versioning: { type: "staggered", params: { maxAge: $maxage }, cleanupIntervalS: 3600, fsPath: "", fsType: "basic" }
+    }'
+}
+
+configure() {
+    wait_api
+    api PATCH config/options '{
+        "listenAddresses": ["tcp://0.0.0.0:22000"],
+        "globalAnnounceEnabled": false, "localAnnounceEnabled": false,
+        "relaysEnabled": false, "natEnabled": false,
+        "urAccepted": -1, "crashReportingEnabled": false,
+        "startBrowser": false, "autoUpgradeIntervalH": 0
+    }' >/dev/null
+    api PATCH config/gui "$(jq -n --arg a "$gui" '{address: $a, tls: false}')" >/dev/null
+    [ "$(api_code GET config/folders/default)" = 404 ] || api DELETE config/folders/default >/dev/null
+    # PATCH keeps the device list, POST creates without one; the local device is implied.
+    if [ "$(api_code GET config/folders/$folder_id)" = 200 ]; then
+        api PATCH "config/folders/$folder_id" "$(folder_json)" >/dev/null
+    else
+        api POST config/folders "$(folder_json)" >/dev/null
+    fi
+    if [ "$(api GET config/restart-required | jq -r .requiresRestart)" = true ]; then
+        if command -v systemctl >/dev/null && systemctl is-active -q "$service"; then
+            systemctl restart "$service"
+        else
+            api POST system/restart >/dev/null
+        fi
+        sleep 2
+        wait_api
+    fi
+}
+
+install() {
+    [ "$(id -u)" -eq 0 ] || die "install needs root"
+    apt-get install -y --no-install-recommends syncthing curl jq bsdextrautils >/dev/null
+    id -u "$user" >/dev/null 2>&1 || useradd --system --home-dir "$home" --create-home --shell /usr/sbin/nologin "$user"
+    install -d -o "$user" -g "$user" -m 750 "$folder"
+    if [ ! -f "$sthome/config.xml" ]; then
+        local pw=${CUBBY_GUI_PASSWORD-}
+        if [ -z "$pw" ]; then
+            if [ -t 0 ]; then
+                read -r -s -p "GUI password for user admin: " pw; echo
+            else
+                pw=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
+                echo "GUI password for user admin (shown once): $pw"
+            fi
+        fi
+        install -d -o "$user" -g "$user" -m 700 "$sthome"
+        printf '%s' "$pw" | runuser -u "$user" -- syncthing generate --home "$sthome" \
+            --gui-user admin --gui-password - >/dev/null
+    fi
+    mkdir -p "/etc/systemd/system/$service.service.d"
+    printf '[Service]\nEnvironment=STHOMEDIR=%s\n' "$sthome" > "/etc/systemd/system/$service.service.d/cubby.conf"
+    systemctl daemon-reload
+    systemctl enable -q --now "$service"
+    configure
+    install -m 755 "$0" /usr/local/bin/cubby
+    printf '*/10 * * * * root /usr/local/bin/cubby health\n' > /etc/cron.d/cubby
+    if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
+        ufw allow 22000/tcp comment cubby >/dev/null
+    fi
+    echo "device ID: $(api GET system/status | jq -r .myID)"
+    echo "sync port: 22000/tcp. GUI: ssh -L 8384:$gui HOST, then http://127.0.0.1:8384"
+}
+
+add() {
+    local name=${1-} id=${2-} shared
+    [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "usage: cubby add NAME DEVICE-ID"
+    [[ $id =~ ^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$ ]] || die "not a device ID: $id"
+    if [ "$(api_code GET "config/devices/$id")" = 200 ]; then
+        api PATCH "config/devices/$id" "$(jq -n --arg n "$name" '{name: $n}')" >/dev/null
+    else
+        api POST config/devices "$(jq -n --arg n "$name" --arg id "$id" '{deviceID: $id, name: $n, addresses: ["dynamic"]}')" >/dev/null
+    fi
+    shared=$(api GET "config/folders/$folder_id" \
+        | jq --arg id "$id" 'if any(.devices[]; .deviceID == $id) then . else .devices += [{deviceID: $id}] end')
+    api PUT "config/folders/$folder_id" "$shared" >/dev/null
+    echo "added $name; accept the Cubby folder on that device"
+}
+
+remove() {
+    local name=${1-} id
+    [ -n "$name" ] || die "usage: cubby remove NAME"
+    id=$(api GET config/devices | jq -r --arg n "$name" '.[] | select(.name == $n) | .deviceID')
+    [ -n "$id" ] || die "no device named $name"
+    api DELETE "config/devices/$id" >/dev/null
+    echo "removed $name"
+}
+
+status() {
+    local me conns stats
+    me=$(api GET system/status | jq -r .myID)
+    conns=$(api GET system/connections)
+    stats=$(api GET stats/device)
+    echo "server $me"
+    api GET config/devices | jq -r --arg me "$me" --argjson c "$conns" --argjson s "$stats" '
+        .[] | select(.deviceID != $me)
+        | [.name, "connected=\($c.connections[.deviceID].connected // false)",
+           "last seen \($s[.deviceID].lastSeen // "never" | if startswith("1970-") then "never" else . end)"] | @tsv' \
+        | column -t -s "$(printf '\t')"
+    api GET "db/status?folder=$folder_id" \
+        | jq -r '"folder \(.state), \(.globalFiles) files, \(.globalBytes) bytes, \(.needBytes) bytes pending"'
+}
+
+health() {
+    local pct now conns stats
+    pct=$(df --output=pcent "$folder" | tail -1 | tr -dc 0-9)
+    [ "$pct" -lt "$disk_pct" ] || echo "cubby: disk ${pct}% full at $folder"
+    if [ "$(api_code GET system/status)" != 200 ]; then echo "cubby: Syncthing API down at $gui"; return; fi
+    now=$(date +%s)
+    conns=$(api GET system/connections)
+    stats=$(api GET stats/device)
+    # Disconnected devices with a real last-seen time; never-connected ones appear in status instead.
+    api GET config/devices | jq -r --argjson c "$conns" --argjson s "$stats" '
+        .[] | select(($c.connections[.deviceID].connected // false) | not)
+        | [.name, ($s[.deviceID].lastSeen // "")]
+        | select(.[1] != "" and (.[1] | startswith("1970-") | not)) | @tsv' \
+    | while IFS="$(printf '\t')" read -r name seen; do
+        [ $((now - $(date -d "$seen" +%s))) -lt $((stale_days * 86400)) ] || echo "cubby: $name last seen $seen"
+    done
+}
+
+case "${1-}" in
+    install)   install ;;
+    configure) configure ;;
+    add)       add "${2-}" "${3-}" ;;
+    remove)    remove "${2-}" ;;
+    status)    status ;;
+    health)    health ;;
+    *) sed -n '2,10p' "$0" >&2; exit 1 ;;
+esac

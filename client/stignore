@@ -1,0 +1,25 @@
+// Cubby ignore patterns. Paste into the folder's Ignore Patterns on every device.
+// OS and editor debris only. Conflict copies are not listed: they must sync.
+(?d).DS_Store
+(?d)._*
+(?d).Spotlight-V100
+(?d).Trashes
+(?d).fseventsd
+(?d).TemporaryItems
+(?d)Thumbs.db
+(?d)ehthumbs.db
+(?d)desktop.ini
+(?d)$RECYCLE.BIN
+(?d)System Volume Information
+(?d).Trash-*
+(?d).thumbnails
+(?d)*.swp
+(?d)*.swo
+(?d)*~
+(?d).~lock.*#
+(?d)~$*
+(?d).#*
+(?d)*.tmp
+(?d)*.crdownload
+(?d)*.part
+(?d)*.partial

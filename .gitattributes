@@ -1,2 +1,2 @@
-# The shell scripts are copied into Linux images; CRLF would break their shebangs.
+# The server script runs on Linux; CRLF would break its shebang.
 * text=auto eol=lf
