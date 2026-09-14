@@ -9,17 +9,23 @@
 #   cubby status               devices, last seen, folder state
 #   cubby health               print only what is wrong; cron mails root when it prints
 #
-# Settings, all overridable from the environment:
+# Settings, overridable from the environment; install saves them to /etc/default/cubby:
 #   CUBBY_HOME          /srv/cubby              home of the cubby user
 #   CUBBY_FOLDER        $CUBBY_HOME/Cubby       the synced folder
 #   CUBBY_STHOME        $CUBBY_HOME/.config/syncthing
 #   CUBBY_GUI           127.0.0.1:8384          admin UI, reach it over an ssh tunnel
-#   CUBBY_GUI_PASSWORD  prompted, or generated  first install only
+#   CUBBY_GUI_PASSWORD  prompted, or generated  first install only, never saved
 #   CUBBY_MAX_AGE_DAYS  365                     keep old versions this long, 0 forever
 #   CUBBY_DISK_PCT      85                      health: warn at this usage
 #   CUBBY_STALE_DAYS    7                       health: warn when a device has been away this long
 set -euo pipefail
 
+conf=/etc/default/cubby
+if [ -f "$conf" ]; then
+    while IFS='=' read -r k v; do
+        [[ $k = CUBBY_* && -z ${!k-} ]] && export "$k=$v"
+    done < "$conf"
+fi
 user=cubby
 home=${CUBBY_HOME:-/srv/cubby}
 folder=${CUBBY_FOLDER:-$home/Cubby}
@@ -30,8 +36,13 @@ disk_pct=${CUBBY_DISK_PCT:-85}
 stale_days=${CUBBY_STALE_DAYS:-7}
 folder_id=cubby
 service="syncthing@$user"
+bin=/usr/local/bin/cubby
 
 die() { echo "cubby: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "$1 needs root"; }
+unit_enabled() { command -v systemctl >/dev/null && systemctl is-enabled -q "$service" 2>/dev/null; }
+# reset-failed also clears the start rate limit, which repeated reconfiguring would otherwise hit.
+unit_restart() { systemctl reset-failed "$service"; systemctl "$1" "$service"; }
 
 apikey() {
     local key
@@ -40,16 +51,23 @@ apikey() {
     printf '%s' "$key"
 }
 
-# api METHOD PATH [JSON]. Prints the body; fails on HTTP errors.
+# api METHOD PATH [JSON]. Prints the body; dies with Syncthing's message on HTTP errors.
 api() {
-    local method=$1 path=$2 body=${3-}
-    curl -fsS -X "$method" -H "X-API-Key: $(apikey)" -H 'Content-Type: application/json' \
-        ${body:+--data-binary "$body"} "http://$gui/rest/$path"
+    local method=$1 path=$2 body=${3-} key resp code
+    key=$(apikey) || exit 1
+    resp=$(curl -sS -w '\n%{http_code}' -X "$method" -H "X-API-Key: $key" -H 'Content-Type: application/json' \
+        ${body:+--data-binary "$body"} "http://$gui/rest/$path") || die "cannot reach Syncthing at $gui; run: sudo cubby configure"
+    code=${resp##*$'\n'}
+    resp=${resp%$'\n'*}
+    [[ $code = 2* ]] || die "$method $path: HTTP $code${resp:+: $resp}"
+    printf '%s' "$resp"
 }
 
-# api_code METHOD PATH: prints only the HTTP status, never fails.
+# api_code METHOD PATH: prints only the HTTP status (000 when unreachable), never fails.
 api_code() {
-    curl -sS -o /dev/null -w '%{http_code}' -X "$1" -H "X-API-Key: $(apikey)" "http://$gui/rest/$2" || true
+    local key
+    key=$(apikey) || exit 1
+    curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "X-API-Key: $key" "http://$gui/rest/$2" || true
 }
 
 wait_api() {
@@ -59,6 +77,8 @@ wait_api() {
     done
     die "Syncthing API not reachable at $gui"
 }
+
+my_id() { api GET system/status | jq -r .myID; }
 
 folder_json() {
     jq -n --arg path "$folder" --arg maxage "$((max_age_days * 86400))" '{
@@ -70,7 +90,9 @@ folder_json() {
     }'
 }
 
-configure() {
+cmd_configure() {
+    need_root configure
+    if unit_enabled && ! systemctl is-active -q "$service"; then unit_restart start; fi
     wait_api
     api PATCH config/options '{
         "listenAddresses": ["tcp://0.0.0.0:22000"],
@@ -82,14 +104,14 @@ configure() {
     api PATCH config/gui "$(jq -n --arg a "$gui" '{address: $a, tls: false}')" >/dev/null
     [ "$(api_code GET config/folders/default)" = 404 ] || api DELETE config/folders/default >/dev/null
     # PATCH keeps the device list, POST creates without one; the local device is implied.
-    if [ "$(api_code GET config/folders/$folder_id)" = 200 ]; then
+    if [ "$(api_code GET "config/folders/$folder_id")" = 200 ]; then
         api PATCH "config/folders/$folder_id" "$(folder_json)" >/dev/null
     else
         api POST config/folders "$(folder_json)" >/dev/null
     fi
     if [ "$(api GET config/restart-required | jq -r .requiresRestart)" = true ]; then
-        if command -v systemctl >/dev/null && systemctl is-active -q "$service"; then
-            systemctl restart "$service"
+        if unit_enabled; then
+            unit_restart restart
         else
             api POST system/restart >/dev/null
         fi
@@ -98,43 +120,57 @@ configure() {
     fi
 }
 
-install() {
-    [ "$(id -u)" -eq 0 ] || die "install needs root"
-    apt-get install -y --no-install-recommends syncthing curl jq bsdextrautils >/dev/null
-    id -u "$user" >/dev/null 2>&1 || useradd --system --home-dir "$home" --create-home --shell /usr/sbin/nologin "$user"
-    install -d -o "$user" -g "$user" -m 750 "$folder"
+cmd_install() {
+    need_root install
+    [ -f "$0" ] || die "run the script from the repository: sudo server/cubby install"
+    if ! dpkg -s syncthing curl jq bsdextrautils >/dev/null 2>&1; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends syncthing curl jq bsdextrautils >/dev/null
+    fi
+    id -u "$user" >/dev/null 2>&1 || useradd --system --home-dir "$home" --shell /usr/sbin/nologin "$user"
+    install -d -o "$user" -g "$user" -m 750 "$home" "$folder"
     if [ ! -f "$sthome/config.xml" ]; then
         local pw=${CUBBY_GUI_PASSWORD-}
-        if [ -z "$pw" ]; then
-            if [ -t 0 ]; then
-                read -r -s -p "GUI password for user admin: " pw; echo
-            else
-                pw=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
-                echo "GUI password for user admin (shown once): $pw"
-            fi
+        if [ -z "$pw" ] && [ -t 0 ]; then
+            read -r -s -p "GUI password for user admin (empty to generate one): " pw; echo
         fi
-        install -d -o "$user" -g "$user" -m 700 "$sthome"
+        if [ -z "$pw" ]; then
+            pw=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
+            echo "GUI password for user admin (shown once): $pw"
+        fi
+        # generate creates $sthome itself, mode 700, owned by the cubby user.
         printf '%s' "$pw" | runuser -u "$user" -- syncthing generate --home "$sthome" \
             --gui-user admin --gui-password - >/dev/null
     fi
-    mkdir -p "/etc/systemd/system/$service.service.d"
-    printf '[Service]\nEnvironment=STHOMEDIR=%s\n' "$sthome" > "/etc/systemd/system/$service.service.d/cubby.conf"
-    systemctl daemon-reload
+    printf 'CUBBY_HOME=%s\nCUBBY_FOLDER=%s\nCUBBY_STHOME=%s\nCUBBY_GUI=%s\nCUBBY_MAX_AGE_DAYS=%s\nCUBBY_DISK_PCT=%s\nCUBBY_STALE_DAYS=%s\n' \
+        "$home" "$folder" "$sthome" "$gui" "$max_age_days" "$disk_pct" "$stale_days" > "$conf"
+    local dropin="/etc/systemd/system/$service.service.d/cubby.conf" env
+    env=$(printf '[Service]\nEnvironment="STHOMEDIR=%s" "STGUIADDRESS=%s"' "$sthome" "$gui")
+    if [ "$env" != "$(cat "$dropin" 2>/dev/null)" ]; then
+        mkdir -p "${dropin%/*}"
+        printf '%s\n' "$env" > "$dropin"
+        systemctl daemon-reload
+        if unit_enabled; then unit_restart restart; fi
+    fi
     systemctl enable -q --now "$service"
-    configure
-    install -m 755 "$0" /usr/local/bin/cubby
-    printf '*/10 * * * * root /usr/local/bin/cubby health\n' > /etc/cron.d/cubby
+    cmd_configure
+    [ "$(realpath "$0")" = "$bin" ] || install -m 755 "$0" "$bin"
+    printf '*/10 * * * * root %s health\n' "$bin" > /etc/cron.d/cubby
     if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
         ufw allow 22000/tcp comment cubby >/dev/null
     fi
-    echo "device ID: $(api GET system/status | jq -r .myID)"
+    echo "device ID: $(my_id)"
     echo "sync port: 22000/tcp. GUI: ssh -L 8384:$gui HOST, then http://127.0.0.1:8384"
 }
 
-add() {
-    local name=${1-} id=${2-} shared
+cmd_add() {
+    local name=${1-} id=${2-} taken shared
+    id=${id^^}
     [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "usage: cubby add NAME DEVICE-ID"
-    [[ $id =~ ^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$ ]] || die "not a device ID: $id"
+    [[ $id =~ ^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$ ]] || die "not a device ID: ${2-}"
+    [ "$id" != "$(my_id)" ] || die "$id is the server itself"
+    taken=$(api GET config/devices | jq -r --arg n "$name" --arg id "$id" '.[] | select(.name == $n and .deviceID != $id) | .deviceID')
+    [ -z "$taken" ] || die "name $name already belongs to $taken"
     if [ "$(api_code GET "config/devices/$id")" = 200 ]; then
         api PATCH "config/devices/$id" "$(jq -n --arg n "$name" '{name: $n}')" >/dev/null
     else
@@ -143,21 +179,22 @@ add() {
     shared=$(api GET "config/folders/$folder_id" \
         | jq --arg id "$id" 'if any(.devices[]; .deviceID == $id) then . else .devices += [{deviceID: $id}] end')
     api PUT "config/folders/$folder_id" "$shared" >/dev/null
-    echo "added $name; accept the Cubby folder on that device"
+    echo "added $name; on that device add the server, then accept the Cubby folder"
 }
 
-remove() {
+cmd_remove() {
     local name=${1-} id
     [ -n "$name" ] || die "usage: cubby remove NAME"
-    id=$(api GET config/devices | jq -r --arg n "$name" '.[] | select(.name == $n) | .deviceID')
+    id=$(api GET config/devices | jq -r --arg n "$name" --arg me "$(my_id)" '.[] | select(.name == $n and .deviceID != $me) | .deviceID')
     [ -n "$id" ] || die "no device named $name"
+    [[ $id != *$'\n'* ]] || die "several devices are named $name; use the UI"
     api DELETE "config/devices/$id" >/dev/null
     echo "removed $name"
 }
 
-status() {
+cmd_status() {
     local me conns stats
-    me=$(api GET system/status | jq -r .myID)
+    me=$(my_id)
     conns=$(api GET system/connections)
     stats=$(api GET stats/device)
     echo "server $me"
@@ -166,15 +203,20 @@ status() {
         | [.name, "connected=\($c.connections[.deviceID].connected // false)",
            "last seen \($s[.deviceID].lastSeen // "never" | if startswith("1970-") then "never" else . end)"] | @tsv' \
         | column -t -s "$(printf '\t')"
-    api GET "db/status?folder=$folder_id" \
-        | jq -r '"folder \(.state), \(.globalFiles) files, \(.globalBytes) bytes, \(.needBytes) bytes pending"'
+    api GET "db/status?folder=$folder_id" | jq -r '
+        "folder \(.state), \(.globalFiles) files, \(.globalBytes) bytes, \(.needBytes) bytes pending, "
+        + "\(.receiveOnlyChangedFiles) changed on the server, \(.pullErrors) failed"'
 }
 
-health() {
+cmd_health() {
     local pct now conns stats
+    [ -d "$folder" ] || { echo "cubby: folder $folder is missing"; return; }
     pct=$(df --output=pcent "$folder" | tail -1 | tr -dc 0-9)
-    [ "$pct" -lt "$disk_pct" ] || echo "cubby: disk ${pct}% full at $folder"
-    if [ "$(api_code GET system/status)" != 200 ]; then echo "cubby: Syncthing API down at $gui"; return; fi
+    [ "${pct:-0}" -lt "$disk_pct" ] || echo "cubby: disk ${pct}% full at $folder"
+    if [ "$(api_code GET system/status)" != 200 ]; then echo "cubby: Syncthing API down at $gui; run: cubby configure"; return; fi
+    api GET "db/status?folder=$folder_id" | jq -r '
+        select(.state == "error" or .pullErrors > 0)
+        | "cubby: folder \(.state), \(.pullErrors) items failed to sync" + (if (.error // "") != "" then ": " + .error else "" end)'
     now=$(date +%s)
     conns=$(api GET system/connections)
     stats=$(api GET stats/device)
@@ -189,11 +231,11 @@ health() {
 }
 
 case "${1-}" in
-    install)   install ;;
-    configure) configure ;;
-    add)       add "${2-}" "${3-}" ;;
-    remove)    remove "${2-}" ;;
-    status)    status ;;
-    health)    health ;;
+    install)   cmd_install ;;
+    configure) cmd_configure ;;
+    add)       cmd_add "${2-}" "${3-}" ;;
+    remove)    cmd_remove "${2-}" ;;
+    status)    cmd_status ;;
+    health)    cmd_health ;;
     *) sed -n '2,10p' "$0" >&2; exit 1 ;;
 esac

@@ -1,6 +1,6 @@
 # Android
 
-No root, no Termux. Install [Syncthing-Fork](https://f-droid.org/packages/com.github.catfriend1.syncthingandroid/) from F-Droid. The original Syncthing app is discontinued; the fork is the maintained one.
+No root needed. Install [Syncthing-Fork](https://f-droid.org/packages/com.github.catfriend1.syncthingfork/) from F-Droid. The original Syncthing app is discontinued; the fork is the maintained one.
 
 1. Open the app, allow storage access, note the device ID under Menu > Show device ID.
 2. On the server: `sudo cubby add phone DEVICE-ID`.
