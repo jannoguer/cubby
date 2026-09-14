@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Cubby server: one always-on Syncthing peer that receives, redistributes and
-# versions the folder. Everything talks to the local Syncthing REST API.
+# versions the folder. Everything talks to the local Syncthing REST API, which
+# listens on a socket under /run/cubby that only root and the cubby user reach.
 #
-#   cubby install              packages, user, service, folder, firewall, cron (root, idempotent)
-#   cubby configure            re-apply options, GUI and folder settings (part of install)
-#   cubby add NAME DEVICE-ID   add a device and share the folder with it
-#   cubby remove NAME          revoke a device
-#   cubby status               devices, last seen, folder state
-#   cubby health               print only what is wrong; cron mails root when it prints
+#   cubby install                 packages, user, service, folder, firewall, cron (root, idempotent)
+#   cubby configure               re-apply options and folder settings (part of install)
+#   cubby add NAME DEVICE-ID      add a device and share the folder with it
+#   cubby remove NAME|DEVICE-ID   revoke a device
+#   cubby revert                  drop files changed or created on the server itself
+#   cubby status                  devices, last seen, folder state
+#   cubby health                  print only what is wrong; cron mails root when it prints
 #
 # Settings, overridable from the environment; install saves them to /etc/default/cubby:
 #   CUBBY_HOME          /srv/cubby              home of the cubby user
 #   CUBBY_FOLDER        $CUBBY_HOME/Cubby       the synced folder
 #   CUBBY_STHOME        $CUBBY_HOME/.config/syncthing
-#   CUBBY_GUI           127.0.0.1:8384          admin UI, reach it over an ssh tunnel
-#   CUBBY_GUI_PASSWORD  prompted, or generated  first install only, never saved
 #   CUBBY_MAX_AGE_DAYS  365                     keep old versions this long, 0 forever
 #   CUBBY_DISK_PCT      85                      health: warn at this usage
 #   CUBBY_STALE_DAYS    7                       health: warn when a device has been away this long
@@ -30,12 +30,12 @@ user=cubby
 home=${CUBBY_HOME:-/srv/cubby}
 folder=${CUBBY_FOLDER:-$home/Cubby}
 sthome=${CUBBY_STHOME:-$home/.config/syncthing}
-gui=${CUBBY_GUI:-127.0.0.1:8384}
 max_age_days=${CUBBY_MAX_AGE_DAYS:-365}
 disk_pct=${CUBBY_DISK_PCT:-85}
 stale_days=${CUBBY_STALE_DAYS:-7}
 folder_id=cubby
 service="syncthing@$user"
+sock=/run/cubby/api.sock
 bin=/usr/local/bin/cubby
 
 die() { echo "cubby: $*" >&2; exit 1; }
@@ -43,6 +43,7 @@ need_root() { [ "$(id -u)" -eq 0 ] || die "$1 needs root"; }
 unit_enabled() { command -v systemctl >/dev/null && systemctl is-enabled -q "$service" 2>/dev/null; }
 # reset-failed also clears the start rate limit, which repeated reconfiguring would otherwise hit.
 unit_restart() { systemctl reset-failed "$service"; systemctl "$1" "$service"; }
+is_device_id() { [[ $1 =~ ^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$ ]]; }
 
 apikey() {
     local key
@@ -55,8 +56,8 @@ apikey() {
 api() {
     local method=$1 path=$2 body=${3-} key resp code
     key=$(apikey) || exit 1
-    resp=$(curl -sS -w '\n%{http_code}' -X "$method" -H "X-API-Key: $key" -H 'Content-Type: application/json' \
-        ${body:+--data-binary "$body"} "http://$gui/rest/$path") || die "cannot reach Syncthing at $gui; run: sudo cubby configure"
+    resp=$(curl -sS -w '\n%{http_code}' --unix-socket "$sock" -X "$method" -H "X-API-Key: $key" -H 'Content-Type: application/json' \
+        ${body:+--data-binary "$body"} "http://localhost/rest/$path") || die "cannot reach Syncthing at $sock; run: sudo cubby configure"
     code=${resp##*$'\n'}
     resp=${resp%$'\n'*}
     [[ $code = 2* ]] || die "$method $path: HTTP $code${resp:+: $resp}"
@@ -67,7 +68,7 @@ api() {
 api_code() {
     local key
     key=$(apikey) || exit 1
-    curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "X-API-Key: $key" "http://$gui/rest/$2" || true
+    curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock" -X "$1" -H "X-API-Key: $key" "http://localhost/rest/$2" || true
 }
 
 wait_api() {
@@ -75,7 +76,7 @@ wait_api() {
         [ "$(api_code GET system/status)" = 200 ] && return 0
         sleep 1
     done
-    die "Syncthing API not reachable at $gui"
+    die "Syncthing API not reachable at $sock"
 }
 
 my_id() { api GET system/status | jq -r .myID; }
@@ -101,7 +102,7 @@ cmd_configure() {
         "urAccepted": -1, "crashReportingEnabled": false,
         "startBrowser": false, "autoUpgradeIntervalH": 0
     }' >/dev/null
-    api PATCH config/gui "$(jq -n --arg a "$gui" '{address: $a, tls: false}')" >/dev/null
+    api PATCH config/gui "$(jq -n --arg a "unix://$sock" '{address: $a, tls: false, unixSocketPermissions: "0600"}')" >/dev/null
     [ "$(api_code GET config/folders/default)" = 404 ] || api DELETE config/folders/default >/dev/null
     # PATCH keeps the device list, POST creates without one; the local device is implied.
     if [ "$(api_code GET "config/folders/$folder_id")" = 200 ]; then
@@ -129,23 +130,13 @@ cmd_install() {
     fi
     id -u "$user" >/dev/null 2>&1 || useradd --system --home-dir "$home" --shell /usr/sbin/nologin "$user"
     install -d -o "$user" -g "$user" -m 750 "$home" "$folder"
-    if [ ! -f "$sthome/config.xml" ]; then
-        local pw=${CUBBY_GUI_PASSWORD-}
-        if [ -z "$pw" ] && [ -t 0 ]; then
-            read -r -s -p "GUI password for user admin (empty to generate one): " pw; echo
-        fi
-        if [ -z "$pw" ]; then
-            pw=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
-            echo "GUI password for user admin (shown once): $pw"
-        fi
-        # generate creates $sthome itself, mode 700, owned by the cubby user.
-        printf '%s' "$pw" | runuser -u "$user" -- syncthing generate --home "$sthome" \
-            --gui-user admin --gui-password - >/dev/null
-    fi
-    printf 'CUBBY_HOME=%s\nCUBBY_FOLDER=%s\nCUBBY_STHOME=%s\nCUBBY_GUI=%s\nCUBBY_MAX_AGE_DAYS=%s\nCUBBY_DISK_PCT=%s\nCUBBY_STALE_DAYS=%s\n' \
-        "$home" "$folder" "$sthome" "$gui" "$max_age_days" "$disk_pct" "$stale_days" > "$conf"
+    # generate creates $sthome itself, mode 700, owned by the cubby user.
+    [ -f "$sthome/config.xml" ] || runuser -u "$user" -- syncthing generate --home "$sthome" >/dev/null
+    printf 'CUBBY_HOME=%s\nCUBBY_FOLDER=%s\nCUBBY_STHOME=%s\nCUBBY_MAX_AGE_DAYS=%s\nCUBBY_DISK_PCT=%s\nCUBBY_STALE_DAYS=%s\n' \
+        "$home" "$folder" "$sthome" "$max_age_days" "$disk_pct" "$stale_days" > "$conf"
+    # The API socket lives in a runtime directory only its owner can enter, so no TCP port and no password.
     local dropin="/etc/systemd/system/$service.service.d/cubby.conf" env
-    env=$(printf '[Service]\nEnvironment="STHOMEDIR=%s" "STGUIADDRESS=%s"' "$sthome" "$gui")
+    env=$(printf '[Service]\nEnvironment="STHOMEDIR=%s" "STGUIADDRESS=unix://%s"\nRuntimeDirectory=cubby\nRuntimeDirectoryMode=0700' "$sthome" "$sock")
     if [ "$env" != "$(cat "$dropin" 2>/dev/null)" ]; then
         mkdir -p "${dropin%/*}"
         printf '%s\n' "$env" > "$dropin"
@@ -160,14 +151,14 @@ cmd_install() {
         ufw allow 22000/tcp comment cubby >/dev/null
     fi
     echo "device ID: $(my_id)"
-    echo "sync port: 22000/tcp. GUI: ssh -L 8384:$gui HOST, then http://127.0.0.1:8384"
+    echo "sync port: 22000/tcp"
 }
 
 cmd_add() {
     local name=${1-} id=${2-} taken shared
     id=${id^^}
     [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "usage: cubby add NAME DEVICE-ID"
-    [[ $id =~ ^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$ ]] || die "not a device ID: ${2-}"
+    is_device_id "$id" || die "not a device ID: ${2-}"
     [ "$id" != "$(my_id)" ] || die "$id is the server itself"
     taken=$(api GET config/devices | jq -r --arg n "$name" --arg id "$id" '.[] | select(.name == $n and .deviceID != $id) | .deviceID')
     [ -z "$taken" ] || die "name $name already belongs to $taken"
@@ -179,17 +170,28 @@ cmd_add() {
     shared=$(api GET "config/folders/$folder_id" \
         | jq --arg id "$id" 'if any(.devices[]; .deviceID == $id) then . else .devices += [{deviceID: $id}] end')
     api PUT "config/folders/$folder_id" "$shared" >/dev/null
-    echo "added $name; on that device add the server, then accept the Cubby folder"
+    echo "added $name; on that device add the server and the cubby folder"
 }
 
 cmd_remove() {
-    local name=${1-} id
-    [ -n "$name" ] || die "usage: cubby remove NAME"
-    id=$(api GET config/devices | jq -r --arg n "$name" --arg me "$(my_id)" '.[] | select(.name == $n and .deviceID != $me) | .deviceID')
-    [ -n "$id" ] || die "no device named $name"
-    [[ $id != *$'\n'* ]] || die "several devices are named $name; use the UI"
+    local arg=${1-} id
+    [ -n "$arg" ] || die "usage: cubby remove NAME|DEVICE-ID"
+    if is_device_id "${arg^^}"; then
+        id=${arg^^}
+        [ "$id" != "$(my_id)" ] || die "$id is the server itself"
+        [ "$(api_code GET "config/devices/$id")" = 200 ] || die "no device $id"
+    else
+        id=$(api GET config/devices | jq -r --arg n "$arg" --arg me "$(my_id)" '.[] | select(.name == $n and .deviceID != $me) | .deviceID')
+        [ -n "$id" ] || die "no device named $arg"
+        [[ $id != *$'\n'* ]] || die "several devices are named $arg; remove one by ID: ${id//$'\n'/ }"
+    fi
     api DELETE "config/devices/$id" >/dev/null
-    echo "removed $name"
+    echo "removed $arg"
+}
+
+cmd_revert() {
+    api POST "db/revert?folder=$folder_id" >/dev/null
+    echo "reverted; the devices' copies win"
 }
 
 cmd_status() {
@@ -213,7 +215,7 @@ cmd_health() {
     [ -d "$folder" ] || { echo "cubby: folder $folder is missing"; return; }
     pct=$(df --output=pcent "$folder" | tail -1 | tr -dc 0-9)
     [ "${pct:-0}" -lt "$disk_pct" ] || echo "cubby: disk ${pct}% full at $folder"
-    if [ "$(api_code GET system/status)" != 200 ]; then echo "cubby: Syncthing API down at $gui; run: cubby configure"; return; fi
+    if [ "$(api_code GET system/status)" != 200 ]; then echo "cubby: Syncthing API down at $sock; run: cubby configure"; return; fi
     api GET "db/status?folder=$folder_id" | jq -r '
         select(.state == "error" or .pullErrors > 0)
         | "cubby: folder \(.state), \(.pullErrors) items failed to sync" + (if (.error // "") != "" then ": " + .error else "" end)'
@@ -235,7 +237,8 @@ case "${1-}" in
     configure) cmd_configure ;;
     add)       cmd_add "${2-}" "${3-}" ;;
     remove)    cmd_remove "${2-}" ;;
+    revert)    cmd_revert ;;
     status)    cmd_status ;;
     health)    cmd_health ;;
-    *) sed -n '2,10p' "$0" >&2; exit 1 ;;
+    *) sed -n '2,12p' "$0" >&2; exit 1 ;;
 esac
