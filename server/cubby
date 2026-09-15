@@ -1,54 +1,58 @@
 #!/usr/bin/env bash
 # Cubby server: one always-on Syncthing peer that receives, redistributes and
 # versions the folder. Everything talks to the local Syncthing REST API, which
-# listens on a socket under /run/cubby that only root and the cubby user reach.
+# listens on a socket under /run/cubby that nothing outside the container reaches.
 #
-#   cubby install                 packages, user, service, folder, firewall, cron (root, idempotent)
-#   cubby configure               re-apply options and folder settings (part of install)
+# Run these through the container: docker exec cubby cubby status
+#
 #   cubby add NAME DEVICE-ID      add a device and share the folder with it
 #   cubby remove NAME|DEVICE-ID   revoke a device
 #   cubby revert                  drop files changed or created on the server itself
 #   cubby status                  devices, last seen, folder state
-#   cubby health                  print only what is wrong; cron mails root when it prints
+#   cubby health                  print only what is wrong, and exit non-zero when it does
+#   cubby id                      the server's device ID
+#   cubby configure               re-apply options and folder settings; the entrypoint runs it at start
 #
-# Settings, overridable from the environment; install saves them to /etc/default/cubby:
-#   CUBBY_HOME          /srv/cubby              home of the cubby user
-#   CUBBY_FOLDER        $CUBBY_HOME/Cubby       the synced folder
-#   CUBBY_STHOME        $CUBBY_HOME/.config/syncthing
-#   CUBBY_MAX_AGE_DAYS  365                     keep old versions this long, 0 forever
-#   CUBBY_DISK_PCT      85                      health: warn at this usage
-#   CUBBY_STALE_DAYS    7                       health: warn when a device has been away this long
+# Settings come from the container environment, which compose fills from .env:
+#   CUBBY_FOLDER        /srv/cubby/Cubby   the synced folder
+#   CUBBY_STHOME        /srv/cubby/config  Syncthing's identity, config and database
+#   CUBBY_MAX_AGE_DAYS  365                keep old versions this long, 0 forever
+#   CUBBY_DISK_PCT      85                 health: warn at this usage
+#   CUBBY_STALE_DAYS    7                  health: warn when a device has been away this long
 set -euo pipefail
 
-conf=/etc/default/cubby
-if [ -f "$conf" ]; then
-    while IFS='=' read -r k v; do
-        [[ $k = CUBBY_* && -z ${!k-} ]] && export "$k=$v"
-    done < "$conf"
-fi
-user=cubby
 home=${CUBBY_HOME:-/srv/cubby}
 folder=${CUBBY_FOLDER:-$home/Cubby}
-sthome=${CUBBY_STHOME:-$home/.config/syncthing}
+sthome=${CUBBY_STHOME:-$home/config}
 max_age_days=${CUBBY_MAX_AGE_DAYS:-365}
 disk_pct=${CUBBY_DISK_PCT:-85}
 stale_days=${CUBBY_STALE_DAYS:-7}
 folder_id=cubby
-service="syncthing@$user"
-sock=/run/cubby/api.sock
-bin=/usr/local/bin/cubby
+sock=${CUBBY_SOCK:-/run/cubby/api.sock}
 
 die() { echo "cubby: $*" >&2; exit 1; }
-need_root() { [ "$(id -u)" -eq 0 ] || die "$1 needs root"; }
-unit_enabled() { command -v systemctl >/dev/null && systemctl is-enabled -q "$service" 2>/dev/null; }
-# reset-failed also clears the start rate limit, which repeated reconfiguring would otherwise hit.
-unit_restart() { systemctl reset-failed "$service"; systemctl "$1" "$service"; }
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" >&2; exit 1; }
 is_device_id() { [[ $1 =~ ^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$ ]]; }
+
+# The image carries no column(1); pad the tab-separated fields instead.
+columns() {
+    awk -F'\t' '
+        { for (i = 1; i <= NF; i++) { if (length($i) > w[i]) w[i] = length($i); cell[NR, i] = $i }
+          nf[NR] = NF; rows = NR }
+        END { for (r = 1; r <= rows; r++) {
+                  line = ""
+                  for (i = 1; i <= nf[r]; i++) {
+                      s = cell[r, i]
+                      if (i < nf[r]) { n = w[i] - length(s) + 2; while (n-- > 0) s = s " " }
+                      line = line s
+                  }
+                  print line } }'
+}
 
 apikey() {
     local key
     key=$(sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' "$sthome/config.xml" 2>/dev/null | head -1)
-    [ -n "$key" ] || die "no API key in $sthome/config.xml; run: cubby install"
+    [ -n "$key" ] || die "no API key in $sthome/config.xml; is the config volume mounted?"
     printf '%s' "$key"
 }
 
@@ -57,7 +61,7 @@ api() {
     local method=$1 path=$2 body=${3-} key resp code
     key=$(apikey) || exit 1
     resp=$(curl -sS -w '\n%{http_code}' --unix-socket "$sock" -X "$method" -H "X-API-Key: $key" -H 'Content-Type: application/json' \
-        ${body:+--data-binary "$body"} "http://localhost/rest/$path") || die "cannot reach Syncthing at $sock; run: sudo cubby configure"
+        ${body:+--data-binary "$body"} "http://localhost/rest/$path") || die "cannot reach Syncthing at $sock; check: docker logs cubby"
     code=${resp##*$'\n'}
     resp=${resp%$'\n'*}
     [[ $code = 2* ]] || die "$method $path: HTTP $code${resp:+: $resp}"
@@ -92,8 +96,6 @@ folder_json() {
 }
 
 cmd_configure() {
-    need_root configure
-    if unit_enabled && ! systemctl is-active -q "$service"; then unit_restart start; fi
     wait_api
     api PATCH config/options '{
         "listenAddresses": ["tcp://0.0.0.0:22000"],
@@ -102,56 +104,26 @@ cmd_configure() {
         "urAccepted": -1, "crashReportingEnabled": false,
         "startBrowser": false, "autoUpgradeIntervalH": 0
     }' >/dev/null
-    api PATCH config/gui "$(jq -n --arg a "unix://$sock" '{address: $a, tls: false, unixSocketPermissions: "0600"}')" >/dev/null
+    api PATCH config/gui "$(jq -n --arg a "unix://$sock" '{address: $a, useTLS: false, unixSocketPermissions: "0600"}')" >/dev/null
+    # Syncthing 2 creates no default folder; a config carried over from 1 may have one.
     [ "$(api_code GET config/folders/default)" = 404 ] || api DELETE config/folders/default >/dev/null
     # PATCH keeps the device list, POST creates without one; the local device is implied.
     if [ "$(api_code GET "config/folders/$folder_id")" = 200 ]; then
         api PATCH "config/folders/$folder_id" "$(folder_json)" >/dev/null
     else
+        # Syncthing writes .stfolder itself only when it creates the directory, and a
+        # mounted one always exists already. Seed the marker here, on the one start
+        # that first defines the folder: afterwards a missing marker means the mount
+        # is gone, and Syncthing should stop and say so rather than fetch it all again.
+        install -d -o "${PUID:-1000}" -g "${PGID:-1000}" "$folder/.stfolder"
         api POST config/folders "$(folder_json)" >/dev/null
     fi
     if [ "$(api GET config/restart-required | jq -r .requiresRestart)" = true ]; then
-        if unit_enabled; then
-            unit_restart restart
-        else
-            api POST system/restart >/dev/null
-        fi
+        # Syncthing's own monitor process re-execs it, so the container stays up.
+        api POST system/restart >/dev/null
         sleep 2
         wait_api
     fi
-}
-
-cmd_install() {
-    need_root install
-    [ -f "$0" ] || die "run the script from the repository: sudo server/cubby install"
-    if ! dpkg -s syncthing curl jq bsdextrautils >/dev/null 2>&1; then
-        apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends syncthing curl jq bsdextrautils >/dev/null
-    fi
-    id -u "$user" >/dev/null 2>&1 || useradd --system --home-dir "$home" --shell /usr/sbin/nologin "$user"
-    install -d -o "$user" -g "$user" -m 750 "$home" "$folder"
-    # generate creates $sthome itself, mode 700, owned by the cubby user.
-    [ -f "$sthome/config.xml" ] || runuser -u "$user" -- syncthing generate --home "$sthome" >/dev/null
-    printf 'CUBBY_HOME=%s\nCUBBY_FOLDER=%s\nCUBBY_STHOME=%s\nCUBBY_MAX_AGE_DAYS=%s\nCUBBY_DISK_PCT=%s\nCUBBY_STALE_DAYS=%s\n' \
-        "$home" "$folder" "$sthome" "$max_age_days" "$disk_pct" "$stale_days" > "$conf"
-    # The API socket lives in a runtime directory only its owner can enter, so no TCP port and no password.
-    local dropin="/etc/systemd/system/$service.service.d/cubby.conf" env
-    env=$(printf '[Service]\nEnvironment="STHOMEDIR=%s" "STGUIADDRESS=unix://%s"\nRuntimeDirectory=cubby\nRuntimeDirectoryMode=0700' "$sthome" "$sock")
-    if [ "$env" != "$(cat "$dropin" 2>/dev/null)" ]; then
-        mkdir -p "${dropin%/*}"
-        printf '%s\n' "$env" > "$dropin"
-        systemctl daemon-reload
-        if unit_enabled; then unit_restart restart; fi
-    fi
-    systemctl enable -q --now "$service"
-    cmd_configure
-    [ "$(realpath "$0")" = "$bin" ] || install -m 755 "$0" "$bin"
-    printf '*/10 * * * * root %s health\n' "$bin" > /etc/cron.d/cubby
-    if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
-        ufw allow 22000/tcp comment cubby >/dev/null
-    fi
-    echo "device ID: $(my_id)"
-    echo "sync port: 22000/tcp"
 }
 
 cmd_add() {
@@ -204,41 +176,49 @@ cmd_status() {
         .[] | select(.deviceID != $me)
         | [.name, "connected=\($c.connections[.deviceID].connected // false)",
            "last seen \($s[.deviceID].lastSeen // "never" | if startswith("1970-") then "never" else . end)"] | @tsv' \
-        | column -t -s "$(printf '\t')"
+        | columns
     api GET "db/status?folder=$folder_id" | jq -r '
         "folder \(.state), \(.globalFiles) files, \(.globalBytes) bytes, \(.needBytes) bytes pending, "
         + "\(.receiveOnlyChangedFiles) changed on the server, \(.pullErrors) failed"'
 }
 
+# Prints only what is wrong and exits non-zero when it prints, so the container's
+# HEALTHCHECK turns the same report into an unhealthy status.
 cmd_health() {
-    local pct now conns stats
-    [ -d "$folder" ] || { echo "cubby: folder $folder is missing"; return; }
+    local out="" pct now conns stats folder_err stale
+    [ -d "$folder" ] || { echo "cubby: folder $folder is missing"; return 1; }
     pct=$(df --output=pcent "$folder" | tail -1 | tr -dc 0-9)
-    [ "${pct:-0}" -lt "$disk_pct" ] || echo "cubby: disk ${pct}% full at $folder"
-    if [ "$(api_code GET system/status)" != 200 ]; then echo "cubby: Syncthing API down at $sock; run: cubby configure"; return; fi
-    api GET "db/status?folder=$folder_id" | jq -r '
+    [ "${pct:-0}" -lt "$disk_pct" ] || out+="cubby: disk ${pct}% full at $folder"$'\n'
+    if [ "$(api_code GET system/status)" != 200 ]; then
+        printf '%scubby: Syncthing API down at %s; check: docker logs cubby\n' "$out" "$sock"
+        return 1
+    fi
+    folder_err=$(api GET "db/status?folder=$folder_id" | jq -r '
         select(.state == "error" or .pullErrors > 0)
-        | "cubby: folder \(.state), \(.pullErrors) items failed to sync" + (if (.error // "") != "" then ": " + .error else "" end)'
+        | "cubby: folder \(.state), \(.pullErrors) items failed to sync" + (if (.error // "") != "" then ": " + .error else "" end)')
+    [ -z "$folder_err" ] || out+="$folder_err"$'\n'
     now=$(date +%s)
     conns=$(api GET system/connections)
     stats=$(api GET stats/device)
     # Disconnected devices with a real last-seen time; never-connected ones appear in status instead.
-    api GET config/devices | jq -r --argjson c "$conns" --argjson s "$stats" '
+    stale=$(api GET config/devices | jq -r --argjson c "$conns" --argjson s "$stats" '
         .[] | select(($c.connections[.deviceID].connected // false) | not)
         | [.name, ($s[.deviceID].lastSeen // "")]
         | select(.[1] != "" and (.[1] | startswith("1970-") | not)) | @tsv' \
     | while IFS="$(printf '\t')" read -r name seen; do
         [ $((now - $(date -d "$seen" +%s))) -lt $((stale_days * 86400)) ] || echo "cubby: $name last seen $seen"
-    done
+    done)
+    [ -z "$stale" ] || out+="$stale"$'\n'
+    [ -z "$out" ] || { printf '%s' "$out"; return 1; }
 }
 
 case "${1-}" in
-    install)   cmd_install ;;
     configure) cmd_configure ;;
     add)       cmd_add "${2-}" "${3-}" ;;
     remove)    cmd_remove "${2-}" ;;
     revert)    cmd_revert ;;
     status)    cmd_status ;;
     health)    cmd_health ;;
-    *) sed -n '2,12p' "$0" >&2; exit 1 ;;
+    id)        my_id ;;
+    *)         usage ;;
 esac

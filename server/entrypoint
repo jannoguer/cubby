@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Prepare the mounted directories, start Syncthing as an unprivileged user and
+# apply the Cubby configuration once its API answers.
+#
+# Syncthing stays a child rather than replacing this shell: the configure step
+# has to run after the API is up, and a child of PID 1 that nothing reaps would
+# linger as a zombie. This script reaps it and passes a docker stop straight on.
+set -euo pipefail
+
+puid=${PUID:-1000}
+pgid=${PGID:-1000}
+home=${CUBBY_HOME:-/srv/cubby}
+folder=${CUBBY_FOLDER:-$home/Cubby}
+sthome=${CUBBY_STHOME:-$home/config}
+sock=${CUBBY_SOCK:-/run/cubby/api.sock}
+
+[ "$(id -u)" -eq 0 ] || { echo "cubby: the entrypoint has to start as root to drop to $puid:$pgid" >&2; exit 1; }
+
+# Names for the requested ids, so ls inside the container reads sensibly. The ids
+# are what matter: they are what the files on the host end up carrying.
+getent group "$pgid" >/dev/null 2>&1 || addgroup -g "$pgid" cubby
+getent passwd "$puid" >/dev/null 2>&1 || adduser -D -H -u "$puid" -G "$(getent group "$pgid" | cut -d: -f1)" -s /sbin/nologin cubby
+
+# A recursive chown means walking the whole folder, so only do it when the top of
+# the tree is wrong: a first deploy, or a changed PUID. -h changes a symlink
+# itself, keeping a synced one from pointing the chown at a file outside.
+own_tree() {
+    local dir=$1 mode=$2
+    mkdir -p "$dir"
+    [ "$(stat -c '%u:%g' "$dir")" = "$puid:$pgid" ] || chown -Rh "$puid:$pgid" "$dir"
+    chmod "$mode" "$dir"
+}
+
+mkdir -p "$home"
+chown "$puid:$pgid" "$home"
+chmod 0750 "$home"
+own_tree "$folder" 0750
+own_tree "$sthome" 0700
+
+# The API socket lives in a directory only its owner can enter, so the REST API
+# needs no password and listens on no port.
+mkdir -p "${sock%/*}"
+chown "$puid:$pgid" "${sock%/*}"
+chmod 0700 "${sock%/*}"
+
+# generate writes the key pair and config.xml; on later starts they are there.
+if [ ! -f "$sthome/config.xml" ]; then
+    echo "cubby: generating a new device identity in $sthome"
+    su-exec "$puid:$pgid" syncthing generate --home "$sthome" >/dev/null
+fi
+
+su-exec "$puid:$pgid" env HOME="$home" STHOMEDIR="$sthome" STGUIADDRESS="unix://$sock" \
+    syncthing serve --no-browser --no-upgrade &
+syncthing_pid=$!
+
+# Forward a stop to Syncthing and report the status it exits with.
+on_signal() {
+    kill -TERM "$syncthing_pid" 2>/dev/null || true
+    wait "$syncthing_pid" && exit 0 || exit $?
+}
+trap on_signal TERM INT
+
+if cubby configure; then
+    echo "cubby: device ID $(cubby id)"
+    echo "cubby: sync port 22000/tcp"
+else
+    echo "cubby: could not apply the configuration; leaving Syncthing up so you can look" >&2
+fi
+
+wait "$syncthing_pid"

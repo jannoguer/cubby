@@ -1,0 +1,20 @@
+services:
+  cubby:
+    build: ./server
+    image: cubby
+    container_name: cubby
+    restart: unless-stopped
+    ports:
+      - "${CUBBY_PORT:-22000}:22000/tcp"
+    environment:
+      # The ids the synced files carry on the host. See .env.example.
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      CUBBY_MAX_AGE_DAYS: "${CUBBY_MAX_AGE_DAYS:-365}"
+      CUBBY_DISK_PCT: "${CUBBY_DISK_PCT:-85}"
+      CUBBY_STALE_DAYS: "${CUBBY_STALE_DAYS:-7}"
+    volumes:
+      # The synced folder, with its old versions under .stversions.
+      - "${CUBBY_DATA:-./data}:/srv/cubby/Cubby"
+      # The server's identity, config and database. Back this up.
+      - "${CUBBY_CONFIG:-./config}:/srv/cubby/config"

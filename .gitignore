@@ -1,0 +1,4 @@
+# Local deployment: settings, the synced folder, the server's identity.
+.env
+/data/
+/config/
