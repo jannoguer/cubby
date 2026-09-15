@@ -1,6 +1,6 @@
 FROM alpine:3.24
 
-RUN apk add --no-cache openssh-server openssh-sftp-server openssh-keygen rsync
+RUN apk add --no-cache openssh-server openssh-sftp-server openssh-keygen
 
 # sshd keeps the first value seen per keyword and the stock file sets some of
 # these, so only the Include placed ahead of them can override.
@@ -17,9 +17,7 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'X11Forwarding no' \
     'PermitTunnel no' \
     'PermitUserRC no' \
-    'AuthorizedKeysFile none' \
-    'AuthorizedKeysCommand /usr/local/bin/cubby-authorized-keys %u' \
-    'AuthorizedKeysCommandUser nobody' \
+    'AuthorizedKeysFile /run/cubby/authorized_keys' \
     'HostKey /config/ssh_host_keys/ssh_host_ed25519_key' \
     'LoginGraceTime 30' \
     'MaxAuthTries 3' \
@@ -32,14 +30,8 @@ RUN mkdir -p /config \
     && adduser -D -h /config/home -s /bin/sh -u 1000 syncuser \
     && sed -i 's|^syncuser:!:|syncuser:*:|' /etc/shadow
 
-COPY client/ /opt/cubby/client/
-
-# sshd refuses an AuthorizedKeysCommand that is not root-owned and unwritable by others.
-COPY authorized-keys.sh /usr/local/bin/cubby-authorized-keys
-COPY on-key-change.sh /usr/local/bin/cubby-on-key-change
-COPY session.sh /usr/local/bin/cubby-session
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod 755 /usr/local/bin/cubby-authorized-keys /usr/local/bin/cubby-on-key-change /usr/local/bin/cubby-session /entrypoint.sh
+RUN chmod 755 /entrypoint.sh
 
 EXPOSE 22
 

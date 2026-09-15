@@ -4,7 +4,7 @@
 
 ## On demand: SFTP app
 
-The server is plain SFTP on port `2222`, user `syncuser`, key auth only. Generate an ed25519 key in the app (or import one), put its public key on the server as `keys/phone.pub` (chmod 644) and connect. Files appear immediately; nothing runs in the background.
+The server is plain SFTP on port `2222`, user `syncuser`, key auth only. Generate an ed25519 key in the app (or import one), put its public key on the server as `keys/phone.pub`, run `docker compose restart cubby` and connect. Files appear immediately; nothing runs in the background.
 
 ## Continuous: Termux
 

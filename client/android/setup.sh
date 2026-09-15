@@ -1,7 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Cubby Android client installer; docs/ANDROID_SETUP.md has the one-line invocation.
-# full-upgrade before installing curl: on an old bootstrap the new curl needs
-# OpenSSL symbols a plain upgrade holds back.
+# The one-line invocation full-upgrades first: on an old bootstrap the new curl needs OpenSSL symbols a plain upgrade holds back.
 # Piped through bash, stdin is the script itself, so prompts read from /dev/tty.
 # Overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_HOST_FINGERPRINT, CUBBY_MUTAGEN_VERSION.
 set -eu
@@ -21,7 +20,7 @@ if ! { : < /dev/tty; } 2>/dev/null; then
 fi
 
 echo "[1/9] Installing base packages"
-pkg update -y && pkg upgrade -y -o Dpkg::Options::=--force-confnew
+pkg update -y
 pkg install -y openssh curl proot
 
 echo "[2/9] Downloading Mutagen"
@@ -49,7 +48,7 @@ else
     ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/cubby
 fi
 
-echo "[5/9] Register this public key on the server as keys/phone.pub (chmod 644); it works at once, no restart:"
+echo "[5/9] Register this public key on the server as keys/phone.pub, then run: docker compose restart cubby"
 echo
 cat ~/.ssh/cubby.pub
 echo
@@ -102,7 +101,7 @@ fi
 # terminal; a known host connects silently. -n: stdin is the piped script and
 # ssh would forward the rest of it to the remote command.
 echo "Compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs cubby'."
-ssh -n -T -o StrictHostKeyChecking=ask cubby true
+ssh -n -T -o StrictHostKeyChecking=ask cubby true || die "could not log in; register the key as keys/phone.pub and restart the server, then rerun."
 
 echo "[8/9] Shared storage"
 if [ ! -L ~/storage/shared ]; then
@@ -141,8 +140,7 @@ done
 if termux-chroot mutagen sync list Cubby > /dev/null 2>&1; then
     echo "Sync session Cubby already exists."
 else
-    # .cubby/local holds this device's health markers.
-    termux-chroot mutagen sync create --name=Cubby --ignore=/.cubby/local ~/storage/shared/Cubby cubby:/shared
+    termux-chroot mutagen sync create --name=Cubby ~/storage/shared/Cubby cubby:/shared
 fi
 termux-chroot mutagen sync list
 

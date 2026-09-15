@@ -26,7 +26,7 @@ services:
       - CHOWN            # entrypoint: home and /shared ownership
       - DAC_OVERRIDE     # entrypoint: read host-owned key files, chmod mounts
       - FOWNER           # entrypoint: chmod on host-owned bind mounts
-      - KILL             # sshd and the key watcher: signal syncuser's processes
+      - KILL             # sshd: signal its unprivileged children
       - NET_BIND_SERVICE # sshd: bind port 22
       - SETGID           # sshd: drop to syncuser and the privsep user
       - SETUID
@@ -38,8 +38,7 @@ services:
     mem_limit: 1g
     logging: *logging
     healthcheck:
-      # pgrep would still pass for a wedged sshd; the key watcher has nothing else to probe.
-      test: ["CMD-SHELL", "pgrep -x inotifyd >/dev/null && nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'"]
+      test: ["CMD-SHELL", "nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -51,27 +50,13 @@ services:
     build: ./backup
     container_name: cubby-backup
     init: true
-    # Healthy means the cubby entrypoint has created and chowned shared/.cubby/backup.
-    depends_on:
-      cubby:
-        condition: service_healthy
     environment:
       BACKUP_INTERVAL: "${BACKUP_INTERVAL:-3600}"
-      BACKUP_KEEP_HOURLY: "${BACKUP_KEEP_HOURLY:-24}"
-      BACKUP_KEEP_DAILY: "${BACKUP_KEEP_DAILY:-14}"
-      BACKUP_KEEP_WEEKLY: "${BACKUP_KEEP_WEEKLY:-8}"
-      NTFY_URL: "${NTFY_URL:-}"
-      BACKUP_REMOTE: "${BACKUP_REMOTE:-}"
-      BACKUP_REMOTE_PORT: "${BACKUP_REMOTE_PORT:-22}"
+      BACKUP_KEEP: "${BACKUP_KEEP:-168}"
     volumes:
       - ./shared:/shared:ro
       - ./backups:/backups
-      # The only writable path into shared/: the status marker, synced to every client.
-      - ./shared/.cubby/backup:/status
-      - ./offsite:/offsite:ro
     read_only: true
-    tmpfs:
-      - /tmp:size=64m
     cap_drop:
       - ALL
     security_opt:
