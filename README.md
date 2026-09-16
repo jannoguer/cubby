@@ -97,10 +97,12 @@ Linux:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-curl -fsSLo ~/.config/systemd/user/mutagen.service https://raw.githubusercontent.com/jannoguer/cubby/main/client/linux/mutagen.service
+curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/linux/mutagen.service |
+  sed "s|^ExecStart=mutagen|ExecStart=$(command -v mutagen)|" > ~/.config/systemd/user/mutagen.service
+mutagen daemon stop
 systemctl --user enable --now mutagen.service
-loginctl enable-linger $USER    # headless machines
-journalctl --user -u mutagen -f # logs
+loginctl enable-linger "$USER"
+systemctl --user status mutagen.service
 ```
 
 ## 4. Backups
