@@ -16,13 +16,12 @@ Android: [docs/android.md](docs/android.md).
 
 ## 1. Server
 
-Needs Docker with Compose and TCP `2222` reachable by the clients.
+Needs Docker with Compose and TCP `2222` reachable by the clients. Docker skips ufw.
 
 ```bash
 git clone https://github.com/jannoguer/cubby.git cubby && cd cubby
 mkdir -p data/config data/shared data/clients data/backups
 sudo chown 1000:1000 data/backups
-echo "PASTE_CLIENT_PUB_KEY" > data/clients/work-laptop-2.pub # one .pub per device
 docker compose up --build -d
 docker compose logs server | grep 'Host key fingerprint'
 ```
@@ -31,7 +30,7 @@ Optional settings: `cp .env.example .env` and uncomment what you need.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CUBBY_BIND_ADDR` | `0.0.0.0` | Address to publish `2222` on. Docker bypasses `ufw`, so bind to a VPN or LAN IP when exposed. |
+| `CUBBY_BIND_ADDR` | `0.0.0.0` | Address Docker publishes port 2222 on. |
 | `CUBBY_BACKUP_INTERVAL` | `3600` | Seconds between snapshots. |
 | `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept. |
 
