@@ -30,8 +30,8 @@ chmod 644 "$AUTH"
 mkdir -p /config/home /shared
 chmod 755 /config
 chown syncuser:syncuser /config/home /shared
-# Files placed into shared/ from the host.
-find /shared -mindepth 1 -maxdepth 1 ! -user 1000 -exec chown -R syncuser:syncuser {} +
+# Files placed into shared/ from the host. -h: never follow a symlink out of the tree.
+find /shared ! -user 1000 -exec chown -h syncuser:syncuser {} +
 
 # Fail once with the reason instead of restart-looping.
 if ! /usr/sbin/sshd -t; then
