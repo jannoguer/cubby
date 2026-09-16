@@ -5,17 +5,17 @@ x-logging: &logging
     max-file: "3"
 
 services:
-  cubby:
-    build: .
-    container_name: cubby
+  server:
+    build: ./server
+    container_name: cubby-server
     hostname: cubby
     init: true
     ports:
       - "${CUBBY_BIND_ADDR:-0.0.0.0}:2222:22"
     volumes:
-      - ./config:/config
-      - ./shared:/shared
-      - ./keys:/pubkeys:ro
+      - ./data/config:/config
+      - ./data/shared:/shared
+      - ./data/clients:/clients:ro
     read_only: true
     tmpfs:
       - /run:size=16m
@@ -28,7 +28,7 @@ services:
       - FOWNER           # entrypoint: chmod on host-owned bind mounts
       - KILL             # sshd: signal its unprivileged children
       - NET_BIND_SERVICE # sshd: bind port 22
-      - SETGID           # sshd: drop to syncuser and the privsep user
+      - SETGID           # sshd: drop to cubby and the privsep user
       - SETUID
       - SYS_CHROOT       # sshd: privilege separation chroot
     security_opt:
@@ -45,17 +45,17 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Never mounted into cubby: a client key cannot reach the snapshots.
+  # Never mounted into server: a client key cannot reach the snapshots.
   backup:
     build: ./backup
     container_name: cubby-backup
     init: true
     environment:
-      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-3600}"
-      BACKUP_KEEP: "${BACKUP_KEEP:-168}"
+      CUBBY_BACKUP_INTERVAL: "${CUBBY_BACKUP_INTERVAL:-3600}"
+      CUBBY_BACKUP_KEEP: "${CUBBY_BACKUP_KEEP:-168}"
     volumes:
-      - ./shared:/shared:ro
-      - ./backups:/backups
+      - ./data/shared:/shared:ro
+      - ./data/backups:/backups
     read_only: true
     cap_drop:
       - ALL
@@ -65,7 +65,7 @@ services:
     mem_limit: 512m
     logging: *logging
     healthcheck:
-      test: ["CMD", "/backup.sh", "check"]
+      test: ["CMD", "/entrypoint.sh", "check"]
       interval: 5m
       timeout: 5s
       retries: 1

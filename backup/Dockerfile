@@ -1,12 +1,12 @@
 FROM alpine:3.24
 
 RUN apk add --no-cache rsync \
-    && adduser -D -H -u 1000 -s /sbin/nologin backup
+    && adduser -D -H -u 1000 -s /sbin/nologin cubby
 
-COPY backup.sh /backup.sh
-RUN chmod +x /backup.sh
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # uid 1000 owns everything under /shared, so no capability is needed to read it.
 USER 1000:1000
 
-CMD ["/backup.sh"]
+CMD ["/entrypoint.sh"]

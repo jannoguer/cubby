@@ -1,5 +1,2 @@
-config/
-shared/
-keys/
-backups/
+data/
 .env

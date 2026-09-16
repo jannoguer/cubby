@@ -1,13 +1,13 @@
 #!/bin/sh
-# Hardlinked rsync snapshots of /shared into /backups every BACKUP_INTERVAL seconds;
-# the newest BACKUP_KEEP are kept, /backups/latest points at the newest.
-# "backup.sh check" is the healthcheck: fails when latest is older than two intervals.
+# Hardlinked rsync snapshots of /shared into /backups every CUBBY_BACKUP_INTERVAL seconds;
+# the newest CUBBY_BACKUP_KEEP are kept, /backups/latest points at the newest.
+# "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals.
 set -eu
 
 SRC=/shared
 DST=/backups
-INTERVAL=${BACKUP_INTERVAL:-3600}
-KEEP=${BACKUP_KEEP:-168}
+INTERVAL=${CUBBY_BACKUP_INTERVAL:-3600}
+KEEP=${CUBBY_BACKUP_KEEP:-168}
 
 die() {
     echo "ERROR: $1" >&2
@@ -15,9 +15,9 @@ die() {
 }
 
 case "$INTERVAL$KEEP" in
-    *[!0-9]*|'') die "BACKUP_INTERVAL and BACKUP_KEEP must be whole numbers, got '$INTERVAL' and '$KEEP'." ;;
+    *[!0-9]*|'') die "CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be whole numbers, got '$INTERVAL' and '$KEEP'." ;;
 esac
-[ "$INTERVAL" -ge 1 ] && [ "$KEEP" -ge 1 ] || die "BACKUP_INTERVAL and BACKUP_KEEP must be at least 1."
+[ "$INTERVAL" -ge 1 ] && [ "$KEEP" -ge 1 ] || die "CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be at least 1."
 
 if [ "${1-}" = check ]; then
     [ -d "$DST/latest" ] || die "no snapshot yet"
@@ -27,7 +27,7 @@ if [ "${1-}" = check ]; then
     exit 0
 fi
 
-[ -w "$DST" ] || die "$DST is not writable by uid $(id -u); run 'chown 1000:1000 backups' on the host."
+[ -w "$DST" ] || die "$DST is not writable by uid $(id -u); run 'chown 1000:1000 data/backups' on the host."
 
 while :; do
     start=$(date +%s)

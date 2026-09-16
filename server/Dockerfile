@@ -11,7 +11,7 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'PermitRootLogin no' \
     'PubkeyAuthentication yes' \
     'AuthenticationMethods publickey' \
-    'AllowUsers syncuser' \
+    'AllowUsers cubby' \
     'AllowTcpForwarding no' \
     'AllowAgentForwarding no' \
     'X11Forwarding no' \
@@ -27,8 +27,8 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
 
 # adduser -D writes "!" to /etc/shadow, which sshd treats as locked even for key auth.
 RUN mkdir -p /config \
-    && adduser -D -h /config/home -s /bin/sh -u 1000 syncuser \
-    && sed -i 's|^syncuser:!:|syncuser:*:|' /etc/shadow
+    && adduser -D -h /config/home -s /bin/sh -u 1000 cubby \
+    && sed -i 's|^cubby:!:|cubby:*:|' /etc/shadow
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh

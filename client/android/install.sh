@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Cubby Android client installer; docs/ANDROID_SETUP.md has the one-line invocation.
+# Cubby Android client installer; docs/android.md has the one-line invocation.
 # The one-line invocation full-upgrades first: on an old bootstrap the new curl needs OpenSSL symbols a plain upgrade holds back.
 # Piped through bash, stdin is the script itself, so prompts read from /dev/tty.
 # Overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_HOST_FINGERPRINT, CUBBY_MUTAGEN_VERSION.
@@ -48,7 +48,7 @@ else
     ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/cubby
 fi
 
-echo "[5/9] Register this public key on the server as keys/phone.pub, then run: docker compose restart cubby"
+echo "[5/9] Register this public key on the server as data/clients/phone.pub, then run: docker compose restart server"
 echo
 cat ~/.ssh/cubby.pub
 echo
@@ -75,7 +75,7 @@ else
 Host cubby
     HostName ${SERVER_IP}
     Port ${PORT}
-    User syncuser
+    User cubby
     IdentityFile ~/.ssh/cubby
     IdentitiesOnly yes
 EOF
@@ -100,8 +100,8 @@ fi
 # Interactive: ssh itself shows the fingerprint on first contact and asks on the
 # terminal; a known host connects silently. -n: stdin is the piped script and
 # ssh would forward the rest of it to the remote command.
-echo "Compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs cubby'."
-ssh -n -T -o StrictHostKeyChecking=ask cubby true || die "could not log in; register the key as keys/phone.pub and restart the server, then rerun."
+echo "Compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs server'."
+ssh -n -T -o StrictHostKeyChecking=ask cubby true || die "could not log in; register the key as data/clients/phone.pub and restart the server, then rerun."
 
 echo "[8/9] Shared storage"
 if [ ! -L ~/storage/shared ]; then
@@ -137,13 +137,13 @@ until [ -S ~/.mutagen/daemon/daemon.sock ]; do
     [ "$n" -le 30 ] || die "mutagen daemon did not start; see sv status mutagen and $PREFIX/var/log/sv/mutagen/."
     sleep 1
 done
-if termux-chroot mutagen sync list Cubby > /dev/null 2>&1; then
-    echo "Sync session Cubby already exists."
+if termux-chroot mutagen sync list cubby > /dev/null 2>&1; then
+    echo "Sync session cubby already exists."
 else
-    termux-chroot mutagen sync create --name=Cubby ~/storage/shared/Cubby cubby:/shared
+    termux-chroot mutagen sync create --name=cubby ~/storage/shared/Cubby cubby:/shared
 fi
 termux-chroot mutagen sync list
 
 echo "Done. Files sync between ~/storage/shared/Cubby and the server while Termux runs."
 echo "Daemon: sv status mutagen; log: $PREFIX/var/log/sv/mutagen/current."
-echo "For boot start and battery settings see docs/ANDROID_SETUP.md."
+echo "For boot start and battery settings see docs/android.md."
