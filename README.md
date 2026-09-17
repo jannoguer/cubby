@@ -144,7 +144,7 @@ Rotate the host key:
 
 ```bash
 docker compose down
-rm -rf data/config/ssh_host_keys
+sudo rm -rf data/config/ssh_host_keys
 docker compose up -d
 docker compose logs server | grep 'Host key fingerprint'
 ```
