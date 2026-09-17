@@ -115,10 +115,11 @@ docker compose logs -f backup
 ls data/backups/
 ```
 
-Restore by copying out of a snapshot; the copy syncs to every client:
+Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client. Never copy into `data/shared/` as root: a client can plant a symlink there.
 
 ```bash
-sudo cp -a data/backups/2026-09-03T030000Z/some/folder data/shared/some/
+sudo tar -C data/backups/2026-09-03T030000Z -cf - some/folder |
+  docker compose exec -T -u cubby server tar -C /shared -xf -
 ```
 
 Offsite copy: pull from another machine, `rsync -aH server:/path/cubby/data/backups/ backups/`.
