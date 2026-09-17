@@ -97,8 +97,8 @@ Linux:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/linux/mutagen.service |
-  sed "s|^ExecStart=mutagen|ExecStart=$(command -v mutagen)|" > ~/.config/systemd/user/mutagen.service
+curl -fsSL -o /tmp/mutagen.service https://raw.githubusercontent.com/jannoguer/cubby/main/client/linux/mutagen.service &&
+  sed "s|^ExecStart=mutagen|ExecStart=$(command -v mutagen)|" /tmp/mutagen.service > ~/.config/systemd/user/mutagen.service
 mutagen daemon stop
 systemctl --user enable --now mutagen.service
 loginctl enable-linger "$USER"
