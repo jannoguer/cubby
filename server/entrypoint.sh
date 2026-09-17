@@ -5,8 +5,7 @@ KEYDIR=/config/ssh_host_keys
 KEY=$KEYDIR/ssh_host_ed25519_key
 AUTH=/run/cubby/authorized_keys
 
-# /config keeps the host directory's owner. Owned by uid 1000, the sync user could rename
-# the key directory aside and plant its own key, so root takes both here.
+# A uid-1000-owned /config would let the sync user swap the key directory; root takes it.
 chown root:root /config
 chmod 755 /config
 mkdir -p "$KEYDIR"
@@ -50,4 +49,13 @@ if ! /usr/sbin/sshd -t; then
     echo "ERROR: sshd configuration is invalid (see above)." >&2
     exit 1
 fi
+# The drop-in only applies through the Include in Alpine's stock sshd_config; check the effective values.
+effective=$(/usr/sbin/sshd -T)
+for want in 'allowusers cubby' 'authorizedkeysfile /run/cubby/authorized_keys' \
+    'authenticationmethods publickey' 'permitrootlogin no' 'passwordauthentication no'; do
+    if ! printf '%s\n' "$effective" | grep -qx "$want"; then
+        echo "ERROR: sshd is not applying '$want'; the drop-in in /etc/ssh/sshd_config.d is being ignored." >&2
+        exit 1
+    fi
+done
 exec /usr/sbin/sshd -D -e
