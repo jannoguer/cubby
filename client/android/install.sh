@@ -94,13 +94,15 @@ if [ -n "${CUBBY_HOST_FINGERPRINT-}" ]; then
     if [ "$FINGERPRINT" != "$CUBBY_HOST_FINGERPRINT" ]; then
         die "server presented $FINGERPRINT, expected $CUBBY_HOST_FINGERPRINT."
     fi
+    # Replace any earlier line for this host: ssh accepts a match on any line, so a retired key would stay trusted.
+    [ -f ~/.ssh/known_hosts ] && ssh-keygen -q -R "${KEYLINE%% *}" -f ~/.ssh/known_hosts
     printf '%s\n' "$KEYLINE" >> ~/.ssh/known_hosts
     chmod 600 ~/.ssh/known_hosts
 fi
 # Interactive: ssh itself shows the fingerprint on first contact and asks on the
 # terminal; a known host connects silently. -n: stdin is the piped script and
 # ssh would forward the rest of it to the remote command.
-echo "Compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs server'."
+echo "On first contact, compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs server'."
 ssh -n -T -o StrictHostKeyChecking=ask cubby true || die "could not log in; register the key as data/clients/phone.pub and restart the server, then rerun."
 
 echo "[8/9] Shared storage"
