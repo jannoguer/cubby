@@ -38,7 +38,8 @@ while :; do
         echo "[$ts] snapshot already exists; skipping this run" >&2
     else
         # As uid 1000 rsync cannot chown. Du+rwx: a directory copied without owner access could never be pruned.
-        set -- -a --no-owner --no-group --delete --chmod=Du+rwx
+        # -H -S: hardlinks and sparse files cost what they cost in the source. go-w,a-s: drop client-set bits.
+        set -- -aHS --no-owner --no-group --delete --chmod=Du+rwx,go-w,a-s
         [ -d "$DST/latest" ] && set -- "$@" --link-dest="$DST/latest"
         rc=0
         rsync "$@" "$SRC/" "$incoming/" || rc=$?
