@@ -53,7 +53,7 @@ Make a key:
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/cubby
 ```
 
-Put `~/.ssh/cubby.pub` on the server as `data/clients/<device>.pub`.
+Put `~/.ssh/cubby.pub` on the server as `data/clients/<device>.pub`, then restart the server, see [Clients: add, revoke](#5-clients-add-revoke).
 
 Add to `~/.ssh/config`:
 
@@ -97,8 +97,7 @@ Linux:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-curl -fsSL -o /tmp/mutagen.service https://raw.githubusercontent.com/jannoguer/cubby/main/client/linux/mutagen.service &&
-  sed "s|^ExecStart=mutagen|ExecStart=$(command -v mutagen)|" /tmp/mutagen.service > ~/.config/systemd/user/mutagen.service
+curl -fsSL -o /tmp/mutagen.service https://raw.githubusercontent.com/jannoguer/cubby/main/client/linux/mutagen.service && sed "s|^ExecStart=mutagen|ExecStart=$(command -v mutagen)|" /tmp/mutagen.service > ~/.config/systemd/user/mutagen.service
 mutagen daemon stop
 systemctl --user enable --now mutagen.service
 loginctl enable-linger "$USER"
@@ -118,8 +117,7 @@ ls data/backups/
 Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client. Never copy into `data/shared/` as root: a client can plant a symlink there.
 
 ```bash
-sudo tar -C data/backups/2026-09-03T030000Z -cf - some/folder |
-  docker compose exec -T -u cubby server tar -C /shared -xf -
+sudo tar -C data/backups/2026-09-03T030000Z -cf - some/folder | docker compose exec -T -u cubby server tar -C /shared -xf -
 ```
 
 Offsite copy: pull from another machine, `rsync -aH server:/path/cubby/data/backups/ backups/`.
