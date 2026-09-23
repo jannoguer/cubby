@@ -12,7 +12,7 @@ Self-hosted file sync. One Alpine container runs a key-only sshd, every device r
 6. [Maintenance](#6-maintenance)
 7. [Layout](#7-layout)
 
-Android: [docs/android.md](docs/android.md).
+Android: [client/android](client/android/README.md).
 
 ## 1. Server
 
@@ -155,8 +155,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
 ```text
 server/    sshd image; server/entrypoint.sh builds authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    linux/mutagen.service, android/install.sh
-docs/      android.md
+client/    linux/mutagen.service, android/install.sh and its README
 data/      runtime state, ignored by git
   config/    host key and the sync user's home; back it up
   clients/   <device>.pub, read at start

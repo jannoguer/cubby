@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Cubby Android client installer; docs/android.md has the one-line invocation.
+# Cubby Android client installer; client/android/README.md has the one-line invocation.
 # The one-line invocation full-upgrades first: on an old bootstrap the new curl needs OpenSSL symbols a plain upgrade holds back.
 # Piped through bash, stdin is the script itself, so prompts read from /dev/tty.
 # Overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_HOST_FINGERPRINT, CUBBY_MUTAGEN_VERSION.
@@ -148,4 +148,4 @@ termux-chroot mutagen sync list
 
 echo "Done. Files sync between ~/storage/shared/Cubby and the server while Termux runs."
 echo "Daemon: sv status mutagen; log: $PREFIX/var/log/sv/mutagen/current."
-echo "For boot start and battery settings see docs/android.md."
+echo "For boot start and battery settings see https://github.com/jannoguer/cubby/tree/main/client/android."

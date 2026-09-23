@@ -16,7 +16,7 @@ Have the server's host key fingerprint at hand (`docker compose logs server | gr
 apt update && apt -y -o Dpkg::Options::=--force-confnew full-upgrade && apt -y install curl && curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/android/install.sh | bash
 ```
 
-[install.sh](../client/android/install.sh) installs Mutagen, creates the key, prompts for the server, verifies the host key, installs the daemon as a [termux-services](https://wiki.termux.com/wiki/Termux-services) service and creates the `cubby` session in `~/storage/shared/Cubby`. Overrides: `CUBBY_SERVER_IP`, `CUBBY_SERVER_PORT`, `CUBBY_HOST_FINGERPRINT`, `CUBBY_MUTAGEN_VERSION`.
+[install.sh](install.sh) installs Mutagen, creates the key, prompts for the server, verifies the host key, installs the daemon as a [termux-services](https://wiki.termux.com/wiki/Termux-services) service and creates the `cubby` session in `~/storage/shared/Cubby`. Overrides: `CUBBY_SERVER_IP`, `CUBBY_SERVER_PORT`, `CUBBY_HOST_FINGERPRINT`, `CUBBY_MUTAGEN_VERSION`.
 
 Daemon: `sv status mutagen`, `sv restart mutagen`; log in `$PREFIX/var/log/sv/mutagen/current`. Session: `termux-chroot mutagen sync list`. Syncing stops when Android kills Termux: set Termux to Unrestricted battery and run `termux-wake-lock` for long syncs. Shared storage is case-insensitive and polled; if syncs misbehave, recreate the session against `~/cubby`.
 
