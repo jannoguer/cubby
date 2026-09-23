@@ -128,25 +128,43 @@ EOF
     pkg install -y termux-services
     SVC="$PREFIX/var/service/mutagen"
     mkdir -p "$SVC/log"
+    # No exec: proot ignores TERM, so runit's stop would never reach the daemon.
+    # The shell takes the TERM and asks the daemon itself to stop.
     cat > "$SVC/run" <<'RUN'
 #!/data/data/com.termux/files/usr/bin/sh
-exec termux-chroot mutagen daemon run 2>&1
+exec 2>&1
+termux-chroot mutagen daemon run &
+pid=$!
+trap 'termux-chroot mutagen daemon stop; wait "$pid"; exit' TERM
+wait "$pid"
 RUN
     chmod +x "$SVC/run"
     ln -sf "$PREFIX/share/termux-services/svlogger" "$SVC/log/run"
     # runsvdir normally starts with the next shell; start it now for this one.
     . "$PREFIX/etc/profile.d/start-services.sh"
-    sv-enable mutagen
-    # sv cannot reach the service until runsvdir's next scan picks it up.
+    # That starts runsvdir in the background, and sv (sv-enable runs sv up)
+    # fails until runsvdir's scan picks the service up; probe until it has.
     n=0
     until sv status mutagen > /dev/null 2>&1; do
         n=$((n + 1))
         [ "$n" -le 30 ] || die "runit did not pick up the mutagen service; see sv status mutagen."
         sleep 1
     done
+    sv-enable mutagen
     # A daemon left from an earlier run still runs the old binary, and the client
-    # rejects a daemon of another version.
-    sv -w 30 -v restart mutagen
+    # rejects a daemon of another version. Stop it through its own API, not sv:
+    # an earlier run script left TERM to proot. runit then starts the new binary.
+    # daemon stop skips the version check; it fails only when no daemon is
+    # listening yet, and a daemon that starts now is already the new binary.
+    if termux-chroot mutagen daemon stop > /dev/null 2>&1; then
+        # The daemon removes its socket on exit; the wait below then sees the new one.
+        n=0
+        while [ -S ~/.mutagen/daemon/daemon.sock ]; do
+            n=$((n + 1))
+            [ "$n" -le 30 ] || die "old mutagen daemon did not stop; see $PREFIX/var/log/sv/mutagen/."
+            sleep 1
+        done
+    fi
     # A client command would autostart its own daemon inside this proot and hang.
     n=0
     until [ -S ~/.mutagen/daemon/daemon.sock ]; do
