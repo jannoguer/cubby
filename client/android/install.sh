@@ -105,8 +105,7 @@ EOF
         chmod 600 ~/.ssh/known_hosts
     fi
     # Interactive: ssh itself shows the fingerprint on first contact and asks on the
-    # terminal; a known host connects silently. -n: stdin is the pipe the script
-    # came from, nothing for the remote command.
+    # terminal; a known host connects silently.
     echo "On first contact, compare the fingerprint ssh shows with the 'Host key fingerprint' line in 'docker compose logs server'."
     ssh -n -T -o StrictHostKeyChecking=ask cubby true || die "could not log in; register the key as data/clients/<device>.pub and restart the server, then rerun."
 
@@ -129,7 +128,6 @@ EOF
     SVC="$PREFIX/var/service/mutagen"
     mkdir -p "$SVC/log"
     # No exec: proot ignores TERM, so runit's stop would never reach the daemon.
-    # The shell takes the TERM and asks the daemon itself to stop.
     cat > "$SVC/run" <<'RUN'
 #!/data/data/com.termux/files/usr/bin/sh
 exec 2>&1
@@ -151,11 +149,10 @@ RUN
         sleep 1
     done
     sv-enable mutagen
-    # A daemon left from an earlier run still runs the old binary, and the client
-    # rejects a daemon of another version. Stop it through its own API, not sv:
-    # an earlier run script left TERM to proot. runit then starts the new binary.
-    # daemon stop skips the version check; it fails only when no daemon is
-    # listening yet, and a daemon that starts now is already the new binary.
+    # A daemon from an earlier run still runs the old binary, which the client
+    # rejects; an older run script left TERM to proot, so sv cannot stop it.
+    # daemon stop skips the version check and fails only when no daemon is
+    # listening yet, in which case the one starting is already the new binary.
     if termux-chroot mutagen daemon stop > /dev/null 2>&1; then
         # The daemon removes its socket on exit; the wait below then sees the new one.
         n=0
