@@ -15,6 +15,7 @@ services:
     volumes:
       - ./data/config:/config
       - ./data/shared:/shared
+      - ./data/private:/private
       - ./data/clients:/clients:ro
     read_only: true
     tmpfs:
@@ -46,7 +47,7 @@ services:
     restart: unless-stopped
 
   # Never mounted into server: a client key cannot reach the snapshots.
-  backup:
+  backup: &backup
     build: ./backup
     container_name: cubby-backup
     init: true
@@ -71,3 +72,15 @@ services:
       retries: 1
       start_period: 10m
     restart: unless-stopped
+
+  # Same loop over the private folders. Mutagen writes them 0600, each owned by its
+  # key's uid, so only root with DAC_READ_SEARCH (read anything, nothing else) can copy them.
+  backup-private:
+    <<: *backup
+    container_name: cubby-backup-private
+    user: "0:0"
+    cap_add:
+      - DAC_READ_SEARCH
+    volumes:
+      - ./data/private:/shared:ro
+      - ./data/private-backups:/backups
