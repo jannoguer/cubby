@@ -85,6 +85,14 @@ mutagen sync terminate cubby    # remove the session, files stay
 
 Deletions propagate within seconds; the backups are the safety net. Conflicts are never resolved by discarding data: edit the side you want to keep.
 
+Alert (optional, Linux and macOS): every 15 minutes cron runs [client/alert.sh](client/alert.sh), which pushes one message to a URL when a session stays disconnected, halted, conflicted or with problems for over a minute. It pushes again only when the problem changes, never on recovery, and ignores paused sessions. Any URL that takes a POST works, such as an [ntfy](https://ntfy.sh) topic (pick a long random name, it is the only secret); `mutagen sync list` shows the details. On a first crontab, `crontab -l` printing "no crontab" is expected.
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL -o ~/.local/bin/cubby-alert https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.sh && chmod +x ~/.local/bin/cubby-alert
+(crontab -l; echo "*/15 * * * * PATH=$(dirname "$(command -v mutagen)"):/usr/bin:/bin $HOME/.local/bin/cubby-alert https://ntfy.sh/YOUR_TOPIC") | crontab -
+```
+
 ## 3. Daemon on boot
 
 Windows, macOS:
@@ -155,7 +163,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
 ```text
 server/    sshd image; server/entrypoint.sh builds authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    linux/mutagen.service, android/install.sh and its README
+client/    alert.sh, linux/mutagen.service, android/install.sh and its README
 data/      runtime state, ignored by git
   config/    host key and the sync user's home; back it up
   clients/   <device>.pub, read at start
