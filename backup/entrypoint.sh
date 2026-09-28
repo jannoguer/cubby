@@ -1,6 +1,6 @@
 #!/bin/sh
-# Hardlinked rsync snapshots of /shared into /backups every CUBBY_BACKUP_INTERVAL seconds;
-# the newest CUBBY_BACKUP_KEEP are kept, /backups/latest points at the newest.
+# Hardlinked rsync snapshots of /shared into /backups every CUBBY_BACKUP_INTERVAL seconds,
+# skipped when nothing changed; the newest CUBBY_BACKUP_KEEP are kept, /backups/latest points at the newest.
 # "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals.
 set -eu
 
@@ -34,12 +34,17 @@ while :; do
     ts=$(date -u +%Y-%m-%dT%H%M%SZ)
     incoming="$DST/.incoming"
     rm -rf "$incoming"
+    # As uid 1000 rsync cannot chown. Du+rwx: a directory copied without owner access could never be pruned.
+    # -H -S: hardlinks and sparse files cost what they cost in the source. go-w,a-s: drop client-set bits.
+    set -- -aHS --no-owner --no-group --delete --chmod=Du+rwx,go-w,a-s
     if [ -e "$DST/$ts" ]; then
         echo "[$ts] snapshot already exists; skipping this run" >&2
+    # A failed dry run falls through to a real snapshot.
+    elif [ -d "$DST/latest" ] && changes=$(rsync -ni "$@" "$SRC/" "$DST/latest/") && [ -z "$changes" ]; then
+        # The healthcheck reads the link's own mtime.
+        touch -h "$DST/latest"
+        echo "[$ts] no changes; snapshot skipped"
     else
-        # As uid 1000 rsync cannot chown. Du+rwx: a directory copied without owner access could never be pruned.
-        # -H -S: hardlinks and sparse files cost what they cost in the source. go-w,a-s: drop client-set bits.
-        set -- -aHS --no-owner --no-group --delete --chmod=Du+rwx,go-w,a-s
         [ -d "$DST/latest" ] && set -- "$@" --link-dest="$DST/latest"
         rc=0
         rsync "$@" "$SRC/" "$incoming/" || rc=$?

@@ -32,7 +32,7 @@ Optional settings: `cp .env.example .env` and uncomment what you need.
 |---|---|---|
 | `CUBBY_BIND_ADDR` | `0.0.0.0` | Address Docker publishes port 2222 on. |
 | `CUBBY_BACKUP_INTERVAL` | `3600` | Seconds between snapshots. |
-| `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept. |
+| `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept; an interval with no changes writes none. |
 
 Back up `data/config/`: it holds the host key.
 
@@ -106,7 +106,7 @@ systemctl --user status mutagen.service
 
 ## 4. Backups
 
-The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL`. Snapshots are hardlinked, so unchanged files cost no space; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed.
+The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed, so `CUBBY_BACKUP_KEEP` counts changes, not hours. Snapshots are hardlinked, so unchanged files cost no space; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed.
 
 ```bash
 docker compose ps # backup shows unhealthy after two missed intervals
