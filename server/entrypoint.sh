@@ -12,11 +12,8 @@ cp /etc/shadow.base /run/cubby/shadow
 chmod 600 /run/cubby/shadow
 
 # A uid-1000-owned /config would let the sync user swap the key directory; root takes it.
-chown root:root /config
-chmod 755 /config
-mkdir -p "$KEYDIR"
-chown root:root "$KEYDIR"
-chmod 700 "$KEYDIR"
+install -d -m 755 -o root -g root /config
+install -d -m 700 -o root -g root "$KEYDIR"
 [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N "" -f "$KEY"
 # Generated here as root, always; any other owner means the key was replaced.
 if [ "$(stat -c %u "$KEY")" != 0 ]; then
@@ -27,15 +24,11 @@ chmod 600 "$KEY"
 # From the key sshd serves; the .pub sidecar is not kept in step with it.
 echo "Host key fingerprint: $(ssh-keygen -y -f "$KEY" | ssh-keygen -lf -)"
 
-chown root:root /private
-chmod 755 /private
-mkdir -p /config/homes
-chown root:root /config/homes
-chmod 755 /config/homes
+install -d -m 755 -o root -g root /private /config/homes
 # Folder owners are the only record of uids, so a revoked key's uid is never handed out again.
 next=1999
 for d in /private/*; do
-    [ -d "$d" ] || continue
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
     u=$(stat -c %u "$d")
     [ "$u" -gt "$next" ] && next=$u
 done
@@ -62,24 +55,22 @@ for f in /clients/*.pub; do
         continue
     fi
     d=/private/$name
-    if [ -e "$d" ] || [ -L "$d" ]; then
+    if [ -d "$d" ] && [ ! -L "$d" ]; then
         uid=$(stat -c %u "$d")
+    elif [ -e "$d" ] || [ -L "$d" ]; then
+        echo "WARNING: no private folder for ${f##*/}: $d is not a directory." >&2
+        continue
     else
         next=$((next + 1))
         uid=$next
-        mkdir "$d"
     fi
-    # Anything lower was made on the host (root, cubby); it must never become a login.
-    if [ "$uid" -lt 2000 ]; then
-        echo "WARNING: no private folder for ${f##*/}: $d is owned by uid $uid; remove it or chown it to a free uid of 2000 or more." >&2
+    # Below 2000 was made on the host (root, cubby); a uid already in passwd would open two folders to one key.
+    if [ "$uid" -lt 2000 ] || grep -q ":x:$uid:" /run/cubby/passwd; then
+        echo "WARNING: no private folder for ${f##*/}: $d is owned by uid $uid, which is reserved or in use; chown it to a free uid of 2000 or more." >&2
         continue
     fi
-    chown -h "$uid:1000" "$d"
-    chmod 700 "$d"
     home=/config/homes/$uid
-    mkdir -p "$home"
-    chown "$uid:1000" "$home"
-    chmod 700 "$home"
+    install -d -m 700 -o "$uid" -g 1000 "$d" "$home"
     echo "$name:x:$uid:1000::$home:/bin/sh" >> /run/cubby/passwd
     echo "$name:*:::::::" >> /run/cubby/shadow
     printf '%s\n' "$keys" > "$AUTH/$name"

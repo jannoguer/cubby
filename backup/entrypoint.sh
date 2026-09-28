@@ -27,7 +27,7 @@ if [ "${1-}" = check ]; then
     exit 0
 fi
 
-[ -w "$DST" ] || die "$DST is not writable by uid $(id -u); run 'chown 1000:1000 data/backups' on the host."
+[ -w "$DST" ] || die "$DST is not writable by uid $(id -u); chown the host directory mounted there to $(id -u):$(id -g)."
 
 while :; do
     start=$(date +%s)
@@ -37,15 +37,18 @@ while :; do
     # As uid 1000 rsync cannot chown. Du+rwx: a directory copied without owner access could never be pruned.
     # -H -S: hardlinks and sparse files cost what they cost in the source. go-w,a-s: drop client-set bits.
     set -- -aHS --no-owner --no-group --delete --chmod=Du+rwx,go-w,a-s
+    unchanged=0
+    if [ -d "$DST/latest" ]; then
+        # A path rsync cannot read is listed as a change every time, so a failing dry run just snapshots.
+        changes=$(rsync -ni "$@" "$SRC/" "$DST/latest/") && [ -z "$changes" ] && unchanged=1
+        set -- "$@" --link-dest="$DST/latest"
+    fi
     if [ -e "$DST/$ts" ]; then
         echo "[$ts] snapshot already exists; skipping this run" >&2
-    # A failed dry run falls through to a real snapshot.
-    elif [ -d "$DST/latest" ] && changes=$(rsync -ni "$@" "$SRC/" "$DST/latest/") && [ -z "$changes" ]; then
-        # The healthcheck reads the link's own mtime.
-        touch -h "$DST/latest"
+    elif [ "$unchanged" = 1 ]; then
+        touch -h "$DST/latest" # for the healthcheck
         echo "[$ts] no changes; snapshot skipped"
     else
-        [ -d "$DST/latest" ] && set -- "$@" --link-dest="$DST/latest"
         rc=0
         rsync "$@" "$SRC/" "$incoming/" || rc=$?
         case "$rc" in

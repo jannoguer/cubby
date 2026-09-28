@@ -10,7 +10,7 @@ export MUTAGEN_DISABLE_AUTOSTART=1
 
 problems() {
     if ! out=$(mutagen sync list --template '{{range .}}{{.Paused}} {{json .Status}} {{len .Conflicts}} {{len .Alpha.ScanProblems}} {{len .Alpha.TransitionProblems}} {{len .Beta.ScanProblems}} {{len .Beta.TransitionProblems}} {{or .Name .Identifier}}{{"\n"}}{{end}}' 2>&1); then
-        echo "mutagen daemon unreachable"
+        echo "mutagen sync list failed: $(printf '%s\n' "$out" | head -n 1)"
         return
     fi
     printf '%s\n' "$out" | while read -r paused status conflicts a1 a2 b1 b2 name; do
