@@ -91,12 +91,14 @@ Private folder (optional): every `data/clients/<name>.pub` also gets `/private/<
 mutagen sync create --name=private /path/to/private/folder laptop@cubby:/private/laptop
 ```
 
-Alert (optional, Linux and macOS): every 15 minutes cron runs [client/alert.sh](client/alert.sh), which pushes one message to a URL when a session stays disconnected, halted, conflicted or with problems for over a minute. It pushes again only when the problem changes, never on recovery, and ignores paused sessions. Any URL that takes a POST works, such as an [ntfy](https://ntfy.sh) topic (pick a long random name, it is the only secret); `mutagen sync list` shows the details. On a first crontab, `crontab -l` printing "no crontab" is expected.
+Alert (optional, Windows): every 15 minutes a scheduler runs [client/windows/alert.ps1](client/windows/alert.ps1), which shows a notification when a session stays disconnected, halted, conflicted or with problems for over a minute. It shows one again only when the problem changes, never on recovery, and ignores paused sessions; `mutagen sync list` has the details. Download it, then run it as the logged-on user with Windows PowerShell, for example with this [wincron](https://github.com/jannoguer/wincron) line (`NAME` is your Windows user name):
 
-```bash
-mkdir -p ~/.local/bin
-curl -fsSL -o ~/.local/bin/cubby-alert https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.sh && chmod +x ~/.local/bin/cubby-alert
-(crontab -l; echo "*/15 * * * * PATH=$(dirname "$(command -v mutagen)"):/usr/bin:/bin $HOME/.local/bin/cubby-alert https://ntfy.sh/YOUR_TOPIC") | crontab -
+```powershell
+curl.exe -fsSL --create-dirs -o "$HOME\.local\bin\cubby-alert.ps1" https://raw.githubusercontent.com/jannoguer/cubby/main/client/windows/alert.ps1
+```
+
+```text
+*/15 * * * * user=NAME overlap=no timeout=5m powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\NAME\.local\bin\cubby-alert.ps1
 ```
 
 ## 3. Daemon on boot
@@ -175,7 +177,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
 ```text
 server/    sshd image; server/entrypoint.sh builds the users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    alert.sh, linux/mutagen.service, android/install.sh and its README
+client/    windows/alert.ps1, linux/mutagen.service, android/install.sh and its README
 data/      runtime state, ignored by git
   config/    host key and the sync user's home; back it up
   clients/   <device>.pub, read at start
