@@ -17,7 +17,7 @@ install -d -m 700 -o root -g root "$KEYDIR"
 [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N "" -f "$KEY"
 # Generated here as root, always; any other owner means the key was replaced.
 if [ "$(stat -c %u "$KEY")" != 0 ]; then
-    echo "ERROR: $KEY is not owned by root; the host key may have been replaced. Rotate it (README section 6)." >&2
+    echo "ERROR: $KEY is not owned by root; the host key may have been replaced. Rotate it (README section 7)." >&2
     exit 1
 fi
 chmod 600 "$KEY"

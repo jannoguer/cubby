@@ -1,8 +1,7 @@
-# Shows a Windows notification when a Mutagen session stays disconnected,
-# halted, conflicted or with problems for over a minute; again only when that
-# changes, never on recovery. Paused sessions are ignored. Run it from a
-# scheduler as the logged-on user, with Windows PowerShell 5.1: pwsh cannot
-# reach the WinRT notification types.
+# Notifies when an unpaused Mutagen session stays disconnected, halted,
+# conflicted or failing for over a minute; again only when that changes.
+# Run as the logged-on user under Windows PowerShell 5.1: pwsh cannot load
+# the WinRT notification types.
 $state = "$HOME\.local\state\cubby\alert"
 # A missing daemon is the failure itself; autostarting one would hide it.
 $env:MUTAGEN_DISABLE_AUTOSTART = '1'
@@ -54,6 +53,7 @@ if (-not $p) {
 }
 if ((Test-Path $state) -and (Get-Content -Raw $state).Trim() -eq $p) { exit 0 }
 
+# Loads the WinRT assembly; the bare type names below resolve only after it.
 $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
 $text = $xml.GetElementsByTagName('text')

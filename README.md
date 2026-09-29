@@ -1,6 +1,6 @@
 # Cubby
 
-Self-hosted file sync. One Alpine container runs a key-only sshd, every device runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, and a second container keeps hardlinked snapshots where no client key can reach them.
+Self-hosted file sync. One Alpine container runs a key-only sshd, every device runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, and two more containers keep hardlinked snapshots where no client key can reach them.
 
 **Why:** The best part of Dropbox is forgetting it exists. Files land on the laptop, the desktop, the phone, and you stop thinking about it. I wanted that feeling on hardware I own, without a subscription, an account, or a platform that grows unnecessary features every quarter.
 
@@ -9,8 +9,9 @@ Self-hosted file sync. One Alpine container runs a key-only sshd, every device r
 3. [Daemon on boot](#3-daemon-on-boot)
 4. [Backups](#4-backups)
 5. [Clients: add, revoke](#5-clients-add-revoke)
-6. [Maintenance](#6-maintenance)
-7. [Layout](#7-layout)
+6. [Private folders](#6-private-folders)
+7. [Maintenance](#7-maintenance)
+8. [Layout](#8-layout)
 
 Android: [client/android](client/android/README.md).
 
@@ -20,8 +21,9 @@ Needs Docker with Compose and TCP `2222` reachable by the clients. Docker skips 
 
 ```bash
 git clone https://github.com/jannoguer/cubby.git cubby && cd cubby
-mkdir -p data/config data/shared data/clients data/backups
+mkdir -p data/config data/shared data/clients data/backups data/private-backups
 sudo chown 1000:1000 data/backups
+sudo chown 0:0 data/private-backups
 docker compose up --build -d
 docker compose logs server | grep 'Host key fingerprint'
 ```
@@ -32,7 +34,7 @@ Optional settings: `cp .env.example .env` and uncomment what you need.
 |---|---|---|
 | `CUBBY_BIND_ADDR` | `0.0.0.0` | Address Docker publishes port 2222 on. |
 | `CUBBY_BACKUP_INTERVAL` | `3600` | Seconds between snapshots. |
-| `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept; an interval with no changes writes none. |
+| `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept. |
 
 Back up `data/config/`: it holds the host key.
 
@@ -85,22 +87,6 @@ mutagen sync terminate cubby    # remove the session, files stay
 
 Deletions propagate within seconds; the backups are the safety net. Conflicts are never resolved by discarding data: edit the side you want to keep.
 
-Private folder (optional): every `data/clients/<name>.pub` also gets `/private/<name>`, which only the keys in that file can open; other keys can see the folder's name, never its contents. A `.pub` holding several keys, one per line, makes a folder shared by just those devices. The name must be lowercase letters, digits, `_` and `-`, up to 32; the server log prints `Private folder /private/<name> (uid N)` or why it was skipped. For `data/clients/laptop.pub`, sync it with a second session that logs in as `laptop`:
-
-```bash
-mutagen sync create --name=private /path/to/private/folder laptop@cubby:/private/laptop
-```
-
-Alert (optional, Windows): every 15 minutes a scheduler runs [client/windows/alert.ps1](client/windows/alert.ps1), which shows a notification when a session stays disconnected, halted, conflicted or with problems for over a minute. It shows one again only when the problem changes, never on recovery, and ignores paused sessions; `mutagen sync list` has the details. Download it, then run it as the logged-on user with Windows PowerShell, for example with this [wincron](https://github.com/jannoguer/wincron) line (`NAME` is your Windows user name):
-
-```powershell
-curl.exe -fsSL --create-dirs -o "$HOME\.local\bin\cubby-alert.ps1" https://raw.githubusercontent.com/jannoguer/cubby/main/client/windows/alert.ps1
-```
-
-```text
-*/15 * * * * user=NAME overlap=no timeout=5m powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\NAME\.local\bin\cubby-alert.ps1
-```
-
 ## 3. Daemon on boot
 
 Windows, macOS:
@@ -122,7 +108,7 @@ systemctl --user status mutagen.service
 
 ## 4. Backups
 
-The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed, so `CUBBY_BACKUP_KEEP` counts changes, not hours. Snapshots are hardlinked, so unchanged files cost no space; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed.
+The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed. Snapshots are hardlinked, so unchanged files cost no space; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed.
 
 ```bash
 docker compose ps # backup, backup-private show unhealthy after two missed intervals
@@ -130,29 +116,44 @@ docker compose logs -f backup
 ls data/backups/
 ```
 
-Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client. Never copy into `data/shared/` or `data/private/` as root: a client can plant a symlink there.
+Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client. Never copy into `data/shared/` as root: a client can plant a symlink there.
 
 ```bash
 sudo tar -C data/backups/2026-09-03T030000Z -cf - some/folder | docker compose exec -T -u 1000:1000 server tar -C /shared -xf -
-```
-
-Private folders are snapshotted the same way into `data/private-backups/` by `backup-private`, which runs as root with only the right to read. Restore as the folder's owner, here `laptop` with uid 2000 from the server log:
-
-```bash
-sudo tar -C data/private-backups/2026-09-03T030000Z -cf - laptop/some/folder | docker compose exec -T -u 2000:1000 server tar -C /private -xf -
 ```
 
 Offsite copy: pull from another machine, `rsync -aH server:/path/cubby/data/backups/ backups/`.
 
 ## 5. Clients: add, revoke
 
-Add: drop the device's `.pub` into `data/clients/`. Revoke: delete it. A `.pub` can hold several keys, one per line. Revoking keeps `data/private/<name>/`; adding the same name again reopens it. Then:
+Add: drop the device's `.pub` into `data/clients/`. Revoke: delete it. Then:
 
 ```bash
 docker compose restart server # other clients reconnect on their own
 ```
 
-## 6. Maintenance
+## 6. Private folders
+
+Each `data/clients/<name>.pub` also gets `/private/<name>`, open only to the keys in that file. Other keys see its name, never its contents. List several keys, one per line, to share it between those devices: `work.pub` with two devices' keys gives both `/private/work`.
+
+Names are lowercase letters, digits, `_` and `-`, up to 32, and not an existing user such as `cubby` or `root`. The server log prints `Private folder /private/<name> (uid N)` or why it skipped one.
+
+Sync it logged in as the name, through the same `cubby` alias:
+
+```bash
+mutagen sync create --name=private /path/to/private/folder laptop@cubby:/private/laptop
+```
+
+> [!WARNING]
+> The local folder must not be the `cubby` session's folder, inside it, or around it. Mutagen allows it and merges the two, copying private files into `/shared`, where every key can read them.
+
+Revoking keeps the folder for when the name returns. `backup-private` snapshots it into `data/private-backups/`. Restore as the folder's uid from the log, never as root:
+
+```bash
+sudo tar -C data/private-backups/2026-09-03T030000Z -cf - laptop/some/folder | docker compose exec -T -u 2000:1000 server tar -C /private -xf -
+```
+
+## 7. Maintenance
 
 Update:
 
@@ -172,17 +173,17 @@ docker compose logs server | grep 'Host key fingerprint'
 
 Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
 
-## 7. Layout
+## 8. Layout
 
 ```text
-server/    sshd image; server/entrypoint.sh builds the users and authorized_keys at start
+server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
 client/    windows/alert.ps1, linux/mutagen.service, android/install.sh and its README
 data/      runtime state, ignored by git
-  config/    host key and the sync user's home; back it up
-  clients/   <device>.pub, read at start
-  shared/    the synced tree; contents owned by uid 1000
-  private/   <name>/ per client file, each owned by its own uid from 2000 up; Docker creates it
-  backups/   snapshots named <UTC timestamp>Z, latest is a symlink to the newest
-  private-backups/  the same for private/, root-owned; Docker creates it
+  config/            host key and the sync user's home; back it up
+  clients/           <device>.pub, read at start
+  shared/            the synced tree; contents owned by uid 1000
+  private/           <name>/ per client file, each owned by its own uid from 2000 up
+  backups/           snapshots named <UTC timestamp>Z, latest is a symlink to the newest
+  private-backups/   the same for private/
 ```
