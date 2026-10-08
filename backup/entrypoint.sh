@@ -1,17 +1,26 @@
 #!/bin/sh
 # Hardlinked rsync snapshots of /shared into /backups every CUBBY_BACKUP_INTERVAL seconds,
 # skipped when nothing changed; the newest CUBBY_BACKUP_KEEP are kept, /backups/latest points at the newest.
-# "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals.
+# "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals or under 1 GiB is free.
 set -eu
 
 SRC=/shared
 DST=/backups
 INTERVAL=${CUBBY_BACKUP_INTERVAL:-3600}
 KEEP=${CUBBY_BACKUP_KEEP:-168}
+MIN_FREE_KB=1048576
 
 die() {
     echo "ERROR: $1" >&2
     exit 1
+}
+
+free_kb() {
+    df -Pk "$DST" | awk 'NR == 2 { print $4 }'
+}
+
+report() {
+    echo "[$ts] $1, $(( $(free_kb) / 1048576 )) GiB free"
 }
 
 case "$INTERVAL$KEEP" in
@@ -20,6 +29,8 @@ esac
 [ "$INTERVAL" -ge 1 ] && [ "$KEEP" -ge 1 ] || die "CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be at least 1."
 
 if [ "${1-}" = check ]; then
+    kb=$(free_kb)
+    [ "$kb" -ge "$MIN_FREE_KB" ] || die "only $((kb / 1024)) MiB free on $DST"
     [ -d "$DST/latest" ] || die "no snapshot yet"
     # The link's own mtime: rsync -a gives the snapshot directory the source tree's.
     age=$(( $(date +%s) - $(stat -c %Y "$DST/latest") ))
@@ -47,7 +58,7 @@ while :; do
         echo "[$ts] snapshot already exists; skipping this run" >&2
     elif [ "$unchanged" = 1 ]; then
         touch -h "$DST/latest" # for the healthcheck
-        echo "[$ts] no changes; snapshot skipped"
+        report "no changes; snapshot skipped"
     else
         rc=0
         rsync "$@" "$SRC/" "$incoming/" || rc=$?
@@ -57,10 +68,12 @@ while :; do
                 mv "$incoming" "$DST/$ts"
                 # Relative target so the link also resolves on the host.
                 ln -sfn "$ts" "$DST/latest"
-                echo "[$ts] snapshot written"
+                report "snapshot written"
                 ;;
             *)
-                echo "[$ts] WARNING: rsync exited with code $rc; snapshot discarded" >&2
+                hint=
+                [ "$rc" = 11 ] && hint=", disk full or an I/O error"
+                echo "[$ts] WARNING: rsync exited with code $rc$hint; snapshot discarded" >&2
                 rm -rf "$incoming"
                 ;;
         esac

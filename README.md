@@ -6,7 +6,7 @@ Self-hosted file sync. One Alpine container runs a key-only sshd, every device r
 
 1. [Server](#1-server)
 2. [Client](#2-client)
-3. [Daemon on boot](#3-daemon-on-boot)
+3. [Daemon on boot and alerts](#3-daemon-on-boot-and-alerts)
 4. [Backups](#4-backups)
 5. [Clients: add, revoke](#5-clients-add-revoke)
 6. [Private folders](#6-private-folders)
@@ -87,7 +87,7 @@ mutagen sync terminate cubby    # remove the session, files stay
 
 Deletions propagate within seconds; the backups are the safety net. Conflicts are never resolved by discarding data: edit the side you want to keep.
 
-## 3. Daemon on boot
+## 3. Daemon on boot and alerts
 
 Windows, macOS:
 
@@ -105,6 +105,27 @@ systemctl --user enable --now mutagen.service
 loginctl enable-linger "$USER"
 systemctl --user status mutagen.service
 ```
+
+Alerts: a notification when a session stays disconnected, halted, conflicted or failing for over a minute.
+
+Windows (Windows PowerShell, not pwsh):
+
+```powershell
+New-Item -ItemType Directory -Force $HOME\.local\bin | Out-Null
+Invoke-WebRequest https://raw.githubusercontent.com/jannoguer/cubby/main/client/windows/alert.ps1 -OutFile $HOME\.local\bin\cubby-alert.ps1
+$action = New-ScheduledTaskAction -Execute powershell -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$HOME\.local\bin\cubby-alert.ps1`""
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger
+```
+
+Linux, macOS:
+
+```bash
+mkdir -p ~/.local/bin && curl -fsSL -o ~/.local/bin/cubby-alert https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.sh && chmod +x ~/.local/bin/cubby-alert
+(crontab -l 2>/dev/null; echo '*/5 * * * * $HOME/.local/bin/cubby-alert') | crontab -
+```
+
+macOS asks once to allow notifications from Script Editor.
 
 ## 4. Backups
 
@@ -178,7 +199,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
 ```text
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    windows/alert.ps1, linux/mutagen.service, android/install.sh and its README
+client/    alert.sh, windows/alert.ps1, linux/mutagen.service, android/install.sh and its README
 data/      runtime state, ignored by git
   config/            host key and the sync user's home; back it up
   clients/           <device>.pub, read at start
