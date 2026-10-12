@@ -66,7 +66,11 @@ Host cubby
     User cubby
     IdentityFile ~/.ssh/cubby
     IdentitiesOnly yes
+    ServerAliveInterval 15
+    ServerAliveCountMax 3
 ```
+
+The keepalives drop a dead connection, after a network change or sleep, within 45 seconds, so Mutagen reconnects instead of waiting on it.
 
 Create the session. On the first connect, compare the fingerprint ssh shows with the server log.
 

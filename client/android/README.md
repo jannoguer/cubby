@@ -12,9 +12,20 @@ Have the server's host key fingerprint at hand (`docker compose logs server | gr
 curl -fsSL https://raw.githubusercontent.com/jannoguer/cubby/main/client/android/install.sh | bash
 ```
 
-[install.sh](install.sh) upgrades Termux's packages, installs Mutagen, creates the key, prompts for the server, verifies the host key, installs the daemon as a [termux-services](https://wiki.termux.com/wiki/Termux-services) service and creates the `cubby` session in `~/storage/shared/Cubby`. Overrides: `CUBBY_SERVER_IP`, `CUBBY_SERVER_PORT`, `CUBBY_HOST_FINGERPRINT`, `CUBBY_MUTAGEN_VERSION`.
+[install.sh](install.sh) upgrades Termux's packages, installs Mutagen, creates the key, prompts for the server, verifies the host key, installs the daemon as a [termux-services](https://wiki.termux.com/wiki/Termux-services) service and creates the `cubby` session in `~/storage/shared/Cubby`. It also installs a `cubby-alert` service, see [Alerts](#alerts). Overrides: `CUBBY_SERVER_IP`, `CUBBY_SERVER_PORT`, `CUBBY_HOST_FINGERPRINT`, `CUBBY_MUTAGEN_VERSION`, and:
 
-Daemon: `sv status mutagen`, `sv restart mutagen`; log in `$PREFIX/var/log/sv/mutagen/current`. If the daemon has stopped and the service is not bringing it back, start it by hand: `termux-chroot mutagen daemon run > /dev/null 2>&1 &`. Session: `termux-chroot mutagen sync list`. Syncing stops when Android kills Termux: set Termux to Unrestricted battery and run `termux-wake-lock` for long syncs. Shared storage is case-insensitive and polled; if syncs misbehave, recreate the session against `~/cubby`.
+| Variable | Default | Meaning |
+|---|---|---|
+| `CUBBY_POLL_INTERVAL` | `30` | Seconds between scans of the phone's folder. Lower syncs phone edits sooner and costs more battery. |
+| `CUBBY_WAKE_LOCK` | `1` | `1` holds a Termux wake lock while the daemon runs so Doze cannot suspend it; `0` lets the phone sleep, and sync pauses with it. |
+
+The session settings (`CUBBY_POLL_INTERVAL`, symlinks ignored as shared storage cannot hold them) apply when the installer creates the session. To apply them to an existing one, run `termux-chroot mutagen sync terminate cubby` and rerun the installer; files stay. An older `Host cubby` block is kept: add `ServerAliveInterval 15` and `ServerAliveCountMax 3` to it so a connection dropped by a network switch is noticed in under a minute.
+
+Daemon: `sv status mutagen`, `sv restart mutagen`; log in `$PREFIX/var/log/sv/mutagen/current`. If the daemon has stopped and the service is not bringing it back, start it by hand: `termux-chroot mutagen daemon run > /dev/null 2>&1 &`. Session: `termux-chroot mutagen sync list`. Syncing stops when Android kills Termux: set Termux to Unrestricted battery. Shared storage is case-insensitive and polled; if syncs misbehave, recreate the session against `~/cubby`.
+
+## Alerts
+
+The `cubby-alert` service checks every 15 minutes and shows a notification when a session stays disconnected, halted, conflicted or with problems for over a minute. It notifies again only when the problem changes, removes the notification on recovery, and ignores paused sessions; `termux-chroot mutagen sync list` has the details. It needs the [Termux:API](https://f-droid.org/packages/com.termux.api/) app, from the same source as Termux, opened once. Log: `$PREFIX/var/log/sv/cubby-alert/current`. Turn it off with `sv-disable cubby-alert`.
 
 ## Start at boot (optional)
 
@@ -23,7 +34,6 @@ Install [Termux:Boot](https://f-droid.org/packages/com.termux.boot/), open it on
 mkdir -p ~/.termux/boot
 cat > ~/.termux/boot/start-services.sh <<'EOS'
 #!/data/data/com.termux/files/usr/bin/sh
-termux-wake-lock
 . $PREFIX/etc/profile.d/start-services.sh
 EOS
 chmod +x ~/.termux/boot/start-services.sh

@@ -3,7 +3,8 @@
 # Piped through bash, stdin is the script itself, so prompts read from /dev/tty.
 # The body runs as main, called on the last line: bash has read the whole script
 # before anything runs, so a cut-off download runs nothing.
-# Overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_HOST_FINGERPRINT, CUBBY_MUTAGEN_VERSION.
+# Overrides: CUBBY_SERVER_IP, CUBBY_SERVER_PORT, CUBBY_HOST_FINGERPRINT, CUBBY_MUTAGEN_VERSION,
+# CUBBY_POLL_INTERVAL, CUBBY_WAKE_LOCK.
 set -eu
 
 die() {
@@ -20,6 +21,17 @@ main() {
     if ! { : < /dev/tty; } 2>/dev/null; then
         die "no terminal available for prompts; run from an interactive Termux session."
     fi
+
+    # Mutagen's default is 10s; shared storage is polled through proot, so every scan costs battery.
+    POLL_INTERVAL=${CUBBY_POLL_INTERVAL:-30}
+    case "$POLL_INTERVAL" in
+    '' | *[!0-9]* | 0) die "CUBBY_POLL_INTERVAL must be a positive number of seconds." ;;
+    esac
+    WAKE_LOCK=${CUBBY_WAKE_LOCK:-1}
+    case "$WAKE_LOCK" in
+    0 | 1) ;;
+    *) die "CUBBY_WAKE_LOCK must be 0 or 1." ;;
+    esac
 
     echo "[1/9] Installing base packages"
     # Full upgrade: on an old bootstrap the new curl needs OpenSSL symbols a plain upgrade holds back.
@@ -63,6 +75,9 @@ main() {
     echo "[6/9] Host alias"
     if grep -qs "^Host cubby$" ~/.ssh/config; then
         echo "Host cubby already present in ~/.ssh/config, keeping it."
+        if ! grep -qs "^ *ServerAliveInterval" ~/.ssh/config; then
+            echo "Add 'ServerAliveInterval 15' and 'ServerAliveCountMax 3' to it to notice dropped connections sooner."
+        fi
     else
         SERVER_IP=${CUBBY_SERVER_IP-}
         if [ -z "$SERVER_IP" ]; then
@@ -76,6 +91,8 @@ main() {
             read -r PORT < /dev/tty
             PORT=${PORT:-2222}
         fi
+        # Keepalives: a network switch or Doze leaves a dead connection that
+        # Mutagen would otherwise wait on instead of reconnecting.
         cat >> ~/.ssh/config <<EOF
 Host cubby
     HostName ${SERVER_IP}
@@ -83,6 +100,8 @@ Host cubby
     User cubby
     IdentityFile ~/.ssh/cubby
     IdentitiesOnly yes
+    ServerAliveInterval 15
+    ServerAliveCountMax 3
 EOF
         chmod 600 ~/.ssh/config
     fi
@@ -124,29 +143,110 @@ EOF
 
     echo "[9/9] Daemon service and sync session"
     # runit keeps the daemon alive across Termux sessions and restarts it if it dies.
-    pkg install -y termux-services
+    pkg install -y termux-services termux-api
     SVC="$PREFIX/var/service/mutagen"
     mkdir -p "$SVC/log"
     # No exec: proot ignores TERM, so runit's stop would never reach the daemon.
-    cat > "$SVC/run" <<'RUN'
-#!/data/data/com.termux/files/usr/bin/sh
+    {
+        printf '#!/data/data/com.termux/files/usr/bin/sh\nwake_lock=%s\n' "$WAKE_LOCK"
+        cat <<'RUN'
 exec 2>&1
+# Without it Doze suspends Termux, and the sync with it.
+if [ "$wake_lock" = 1 ]; then termux-wake-lock; fi
 termux-chroot mutagen daemon run &
 pid=$!
-trap 'termux-chroot mutagen daemon stop; wait "$pid"; exit' TERM
+trap 'termux-chroot mutagen daemon stop; wait "$pid"; if [ "$wake_lock" = 1 ]; then termux-wake-unlock; fi; exit' TERM
 wait "$pid"
 RUN
+    } > "$SVC/run"
     chmod +x "$SVC/run"
     ln -sf "$PREFIX/share/termux-services/svlogger" "$SVC/log/run"
+
+    ALERT_SVC="$PREFIX/var/service/cubby-alert"
+    mkdir -p "$ALERT_SVC/log"
+    # Port of client/windows/alert.ps1; the notification clears on recovery.
+    cat > "$ALERT_SVC/run" <<'ALERT'
+#!/data/data/com.termux/files/usr/bin/sh
+# Notifies when an unpaused Mutagen session stays disconnected, halted,
+# conflicted or failing for over a minute; again only when that changes.
+exec 2>&1
+state=$HOME/.local/state/cubby/alert
+# A missing daemon is the failure itself; autostarting one would hide it.
+export MUTAGEN_DISABLE_AUTOSTART=1
+
+problems() {
+    if ! out=$(termux-chroot mutagen sync list --template '{{range .}}{{.Paused}} {{json .Status}} {{with .SessionState}}{{len .Conflicts}}{{else}}0{{end}} {{with .Alpha.EndpointState}}{{len .ScanProblems}} {{len .TransitionProblems}}{{else}}0 0{{end}} {{with .Beta.EndpointState}}{{len .ScanProblems}} {{len .TransitionProblems}}{{else}}0 0{{end}} {{with .SessionState}}{{.LastError}}{{end}}{{println}}{{end}}' 2>&1); then
+        case "$out" in
+        *'(is the daemon running?)'*) echo "Mutagen isn't running." ;;
+        *) echo "Can't check sync ($(printf '%s\n' "$out" | head -n 1 | sed 's/^Error: //'))." ;;
+        esac
+        return
+    fi
+    # The error comes last as it has spaces; any lines it spills onto are
+    # skipped as they do not start with false.
+    printf '%s\n' "$out" | while read -r paused status conflicts a1 a2 b1 b2 err; do
+        [ "$paused" = false ] || continue
+        case "$status" in
+        '"connecting-alpha"') msg="Can't reach this device" ;;
+        '"connecting-beta"') msg="Can't reach the server" ;;
+        '"disconnected"') msg='Not connected' ;;
+        '"halted-on-root-emptied"') msg='Stopped, the folder was emptied on one side' ;;
+        '"halted-on-root-deletion"') msg='Stopped, the folder was deleted on one side' ;;
+        '"halted-on-root-type-change"') msg='Stopped, the folder was replaced by a file on one side' ;;
+        *) msg= ;;
+        esac
+        if [ -n "$msg" ]; then
+            if [ -n "$err" ]; then msg="$msg ($err)"; fi
+            msg="$msg."
+        fi
+        if [ "$conflicts" != 0 ]; then msg="${msg:+$msg }Conflicts to resolve: $conflicts."; fi
+        n=$((a1 + a2 + b1 + b2))
+        if [ "$n" != 0 ]; then msg="${msg:+$msg }Files that could not sync: $n."; fi
+        if [ -n "$msg" ]; then echo "$msg"; fi
+    done
+}
+
+while :; do
+    p=$(problems)
+    if [ -n "$p" ]; then
+        # Rides out reconnects and brief scans.
+        sleep 60
+        p=$(problems)
+    fi
+    if [ -z "$p" ]; then
+        if [ -f "$state" ]; then
+            rm "$state"
+            timeout 30 termux-notification-remove cubby-alert
+        fi
+    elif [ ! -f "$state" ] || [ "$(cat "$state")" != "$p" ]; then
+        echo "$p"
+        # termux-api hangs instead of failing when the Termux:API app is missing.
+        if timeout 30 termux-notification --id cubby-alert --title cubby --content "$p"; then
+            mkdir -p "${state%/*}"
+            printf '%s\n' "$p" > "$state"
+        else
+            echo "Could not notify; install the Termux:API app and open it once."
+        fi
+    fi
+    sleep 900
+done
+ALERT
+    chmod +x "$ALERT_SVC/run"
+    # runsvdir starts a new service at once; hold this one until the session exists.
+    [ -e "$ALERT_SVC/supervise" ] || touch "$ALERT_SVC/down"
+    ln -sf "$PREFIX/share/termux-services/svlogger" "$ALERT_SVC/log/run"
+
     # runsvdir normally starts with the next shell; start it now for this one.
     . "$PREFIX/etc/profile.d/start-services.sh"
     # That starts runsvdir in the background, and sv (sv-enable runs sv up)
-    # fails until runsvdir's scan picks the service up; probe until it has.
-    n=0
-    until sv status mutagen > /dev/null 2>&1; do
-        n=$((n + 1))
-        [ "$n" -le 30 ] || die "runit did not pick up the mutagen service; see sv status mutagen."
-        sleep 1
+    # fails until runsvdir's scan picks the services up; probe until it has.
+    for s in mutagen cubby-alert; do
+        n=0
+        until sv status "$s" > /dev/null 2>&1; do
+            n=$((n + 1))
+            [ "$n" -le 30 ] || die "runit did not pick up the $s service; see sv status $s."
+            sleep 1
+        done
     done
     sv-enable mutagen
     # A daemon from an earlier run still runs the old binary, which the client
@@ -170,14 +270,22 @@ RUN
         sleep 1
     done
     if termux-chroot mutagen sync list cubby > /dev/null 2>&1; then
-        echo "Sync session cubby already exists."
+        echo "Sync session cubby already exists; terminate it and rerun to apply new session settings."
     else
-        termux-chroot mutagen sync create --name=cubby ~/storage/shared/Cubby cubby:/shared
+        # Shared storage cannot hold symlinks, so one from another device would fail every scan.
+        termux-chroot mutagen sync create --name=cubby \
+            --watch-polling-interval-alpha="$POLL_INTERVAL" --symlink-mode=ignore \
+            ~/storage/shared/Cubby cubby:/shared
     fi
     termux-chroot mutagen sync list
+    # After the session exists, so its first check does not report the daemon restart.
+    sv-enable cubby-alert
+    # Rerun: the running loop still has the old run script.
+    sv restart cubby-alert
 
     echo "Done. Files sync between ~/storage/shared/Cubby and the server while Termux runs."
     echo "Daemon: sv status mutagen; log: $PREFIX/var/log/sv/mutagen/current."
+    echo "Alerts need the Termux:API app (F-Droid), opened once; log: $PREFIX/var/log/sv/cubby-alert/current."
     echo "For boot start and battery settings see https://github.com/jannoguer/cubby/tree/main/client/android."
 }
 
