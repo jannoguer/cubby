@@ -175,7 +175,9 @@ state=$HOME/.local/state/cubby/alert
 export MUTAGEN_DISABLE_AUTOSTART=1
 
 problems() {
-    if ! out=$(termux-chroot mutagen sync list --template '{{range .}}{{.Paused}} {{json .Status}} {{with .SessionState}}{{len .Conflicts}}{{else}}0{{end}} {{with .Alpha.EndpointState}}{{len .ScanProblems}} {{len .TransitionProblems}}{{else}}0 0{{end}} {{with .Beta.EndpointState}}{{len .ScanProblems}} {{len .TransitionProblems}}{{else}}0 0{{end}} {{with .SessionState}}{{.LastError}}{{end}}{{println}}{{end}}' 2>&1); then
+    # One string: termux-chroot joins its arguments and reruns them through
+    # sh -c, so the quotes around the template must reach that inner sh.
+    if ! out=$(termux-chroot "mutagen sync list --template '{{range .}}{{.Paused}} {{json .Status}} {{with .SessionState}}{{len .Conflicts}}{{else}}0{{end}} {{with .Alpha.EndpointState}}{{len .ScanProblems}} {{len .TransitionProblems}}{{else}}0 0{{end}} {{with .Beta.EndpointState}}{{len .ScanProblems}} {{len .TransitionProblems}}{{else}}0 0{{end}} {{with .SessionState}}{{.LastError}}{{end}}{{println}}{{end}}'" 2>&1); then
         case "$out" in
         *'(is the daemon running?)'*) echo "Mutagen isn't running." ;;
         *) echo "Can't check sync ($(printf '%s\n' "$out" | head -n 1 | sed 's/^Error: //'))." ;;
