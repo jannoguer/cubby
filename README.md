@@ -1,8 +1,8 @@
 # Cubby
 
-Self-hosted file sync. One Alpine container runs a key-only sshd, every device runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, and two more containers keep hardlinked snapshots where no client key can reach them.
+Self-hosted file sync. One Alpine container runs a key-only sshd, every computer runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, phones copy over [SFTP](#7-sftp), and two more containers keep hardlinked snapshots where no client key can reach them.
 
-**Why:** The best part of Dropbox is forgetting it exists. Files land on the laptop, the desktop, the phone, and you stop thinking about it. I wanted that feeling on hardware I own, without a subscription, an account, or a platform that grows unnecessary features every quarter.
+**Why:** The best part of Dropbox is forgetting it exists. Files land on the laptop and the desktop, and you stop thinking about it. I wanted that feeling on hardware I own, without a subscription, an account, or a platform that grows unnecessary features every quarter.
 
 1. [Server](#1-server)
 2. [Client](#2-client)
@@ -10,10 +10,9 @@ Self-hosted file sync. One Alpine container runs a key-only sshd, every device r
 4. [Backups](#4-backups)
 5. [Clients: add, revoke](#5-clients-add-revoke)
 6. [Private folders](#6-private-folders)
-7. [Maintenance](#7-maintenance)
-8. [Layout](#8-layout)
-
-Android: [client/android](client/android/README.md).
+7. [SFTP](#7-sftp)
+8. [Maintenance](#8-maintenance)
+9. [Layout](#9-layout)
 
 ## 1. Server
 
@@ -159,26 +158,53 @@ docker compose restart server # other clients reconnect on their own
 
 ## 6. Private folders
 
-Each `data/clients/<name>.pub` also gets `/private/<name>`, open only to the keys in that file. Other keys see its name, never its contents. List several keys, one per line, to share it between those devices: `work.pub` with two devices' keys gives both `/private/work`.
+Each `data/clients/<name>.pub` also gets `/private/<name>`, readable only by the keys in that file; list several keys, one per line, to share it. Names: `a-z`, `0-9`, `_`, `-`, up to 32, not `cubby` or `root`. The server log says why it skipped one.
 
-Names are lowercase letters, digits, `_` and `-`, up to 32, and not an existing user such as `cubby` or `root`. The server log prints `Private folder /private/<name> (uid N)` or why it skipped one.
-
-Sync it logged in as the name, through the same `cubby` alias:
+Sync it logged in as the name:
 
 ```bash
 mutagen sync create --name=private /path/to/private/folder laptop@cubby:/private/laptop
 ```
 
 > [!WARNING]
-> The local folder must not be the `cubby` session's folder, inside it, or around it. Mutagen allows it and merges the two, copying private files into `/shared`, where every key can read them.
+> Keep the local folder apart from the `cubby` session's folder, not inside or around it: Mutagen merges them and copies private files into `/shared`.
 
-Revoking keeps the folder for when the name returns. `backup-private` snapshots it into `data/private-backups/`. Restore as the folder's uid from the log, never as root:
+Revoking keeps the folder. `backup-private` snapshots it into `data/private-backups/`.
+
+Each folder's uid:
 
 ```bash
-sudo tar -C data/private-backups/2026-09-03T030000Z -cf - laptop/some/folder | docker compose exec -T -u 2000:1000 server tar -C /private -xf -
+(cd data/private && stat -c '%u  %n' -- *)
+# 2000  victus-laptop-1
+# 2001  msi-work-laptop-1
+# 2002  xiaomi-phone-1
+# ...
 ```
 
-## 7. Maintenance
+Restore as that uid, never as root:
+
+```bash
+sudo tar -C data/private-backups/2026-09-03T030000Z -cf - laptop/some/folder | docker compose exec -T -u <uid>:1000 server tar -C /private -xf -
+```
+
+## 7. SFTP
+
+Pull and push single files or folders without a sync session. A copy, not a sync: a push overwrites the server's file and Mutagen spreads it to every device; overwritten or deleted files come back only from [backups](#4-backups). The server has no rsync, only OpenSSH.
+
+On a computer, use the key and `cubby` alias from [Client](#2-client):
+
+```bash
+scp cubby:/shared/some/file .              # pull
+scp -r folder cubby:/shared/some/          # push
+sftp cubby                                 # interactive; cd /shared
+scp file laptop@cubby:/private/laptop/     # private folder, logged in as its name
+```
+
+Android and iOS work the same way through any SFTP app with key login: server `SERVER_IP`, port `2222`. For the shared folder, set the user to `cubby` and the path to `/shared`. For a private folder, set the user to the folder's name instead, and the path to `/private/<name>`. On first connect, compare the fingerprint the app shows with the server log.
+
+Without `ssh-keygen`, make an Ed25519 key pair in the browser at [sshkeygen.dev](https://sshkeygen.dev), or [maxotto-agent.github.io/sshkeygen](https://maxotto-agent.github.io/sshkeygen/) if it is down. Import the private key into the app and register the `.pub` as in [Clients: add, revoke](#5-clients-add-revoke).
+
+## 8. Maintenance
 
 Update:
 
@@ -198,12 +224,12 @@ docker compose logs server | grep 'Host key fingerprint'
 
 Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
 
-## 8. Layout
+## 9. Layout
 
 ```text
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    alert.sh, windows/alert.ps1, linux/mutagen.service, android/install.sh and its README
+client/    alert.sh, windows/alert.ps1, linux/mutagen.service
 data/      runtime state, ignored by git
   config/            host key and the sync user's home; back it up
   clients/           <device>.pub, read at start
