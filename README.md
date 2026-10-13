@@ -76,18 +76,17 @@ Create the session. On the first connect, compare the fingerprint ssh shows with
 
 ```bash
 mutagen sync create --name=cubby /path/to/local/folder cubby:/shared
-mutagen sync list
 ```
 
 Day to day:
 
 ```bash
-mutagen sync monitor cubby      # live status
-mutagen sync flush cubby        # sync now
-mutagen sync pause cubby        # stop syncing, keep the session
-mutagen sync resume cubby
+mutagen sync list cubby         # status
 mutagen sync terminate cubby    # remove the session, files stay
+mutagen daemon stop             # any mutagen command starts it again
 ```
+
+On Linux with the systemd unit, stop the daemon with `systemctl --user stop mutagen.service` instead: the unit restarts a stopped daemon.
 
 Deletions propagate within seconds; the backups are the safety net. Conflicts are never resolved by discarding data: edit the side you want to keep.
 
