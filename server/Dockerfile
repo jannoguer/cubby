@@ -1,6 +1,6 @@
 FROM alpine:3.24
 
-RUN apk add --no-cache openssh-server openssh-sftp-server openssh-keygen
+RUN apk add --no-cache openssh-server openssh-keygen
 
 # sshd keeps the first value seen per keyword and the stock file sets some of
 # these, so only the Include placed ahead of them can override.

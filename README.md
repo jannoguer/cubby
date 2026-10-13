@@ -70,7 +70,7 @@ Host cubby
     ServerAliveCountMax 3
 ```
 
-The keepalives drop a dead connection, after a network change or sleep, within 45 seconds, so Mutagen reconnects instead of waiting on it.
+`Port` is your `CUBBY_PORT` if you set one. The keepalives drop a dead connection, after a network change or sleep, within 45 seconds, so Mutagen reconnects instead of waiting on it.
 
 Create the session. On the first connect, compare the fingerprint ssh shows with the server log.
 
@@ -200,17 +200,18 @@ sftp cubby                                 # interactive; cd /shared
 scp file laptop@cubby:/private/laptop/     # private folder, logged in as its name
 ```
 
-Android and iOS work the same way through any SFTP app with key login: server `SERVER_IP`, port `2222`. For the shared folder, set the user to `cubby` and the path to `/shared`. For a private folder, set the user to the folder's name instead, and the path to `/private/<name>`. On first connect, compare the fingerprint the app shows with the server log.
+Android and iOS work the same way through any SFTP app with key login: server `SERVER_IP`, port `2222` (or `CUBBY_PORT`). For the shared folder, set the user to `cubby` and the path to `/shared`. For a private folder, set the user to the folder's name instead, and the path to `/private/<name>`. On first connect, compare the fingerprint the app shows with the server log.
 
 Without `ssh-keygen`, make an Ed25519 key pair in the browser at [sshkeygen.dev](https://sshkeygen.dev), or [maxotto-agent.github.io/sshkeygen](https://maxotto-agent.github.io/sshkeygen/) if it is down. Import the private key into the app and register the `.pub` as in [Clients: add, revoke](#5-clients-add-revoke).
 
 ## 8. Maintenance
 
-Update:
+Update, also monthly for Alpine and OpenSSH security fixes: a plain `--build` reuses the cached `apk add` layer and never gets them.
 
 ```bash
 git pull
-docker compose up --build -d
+docker compose build --pull --no-cache
+docker compose up -d
 ```
 
 Rotate the host key:
@@ -222,7 +223,7 @@ docker compose up -d
 docker compose logs server | grep 'Host key fingerprint'
 ```
 
-Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`.
+Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT` if you set one.
 
 ## 9. Layout
 
