@@ -111,12 +111,12 @@ systemctl --user status mutagen.service
 
 Alerts: a notification when a session stays disconnected, halted, conflicted or failing for over a minute.
 
-Windows (Windows PowerShell, not pwsh):
+Windows:
 
 ```powershell
 New-Item -ItemType Directory -Force $HOME\.local\bin | Out-Null
 Invoke-WebRequest https://raw.githubusercontent.com/jannoguer/cubby/main/client/windows/alert.ps1 -OutFile $HOME\.local\bin\cubby-alert.ps1
-$action = New-ScheduledTaskAction -Execute powershell -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$HOME\.local\bin\cubby-alert.ps1`""
+$action = New-ScheduledTaskAction -Execute conhost.exe -Argument "--headless powershell -NoProfile -ExecutionPolicy Bypass -File `"$HOME\.local\bin\cubby-alert.ps1`""
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
 Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger
 ```
