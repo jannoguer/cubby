@@ -181,7 +181,7 @@ Each folder's uid:
 # ...
 ```
 
-Restore as that uid, never as root:
+Restore as that uid, NEVER AS ROOT:
 
 ```bash
 sudo tar -C data/private-backups/2026-09-03T030000Z -cf - laptop/some/folder | docker compose exec -T -u <uid>:1000 server tar -C /private -xf -
