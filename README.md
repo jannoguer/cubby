@@ -119,14 +119,10 @@ Invoke-WebRequest https://raw.githubusercontent.com/jannoguer/cubby/main/client/
 $action = New-ScheduledTaskAction -Execute conhost.exe -Argument "--headless powershell -NoProfile -ExecutionPolicy Bypass -File `"$HOME\.local\bin\cubby-alert.ps1`""
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger -Settings $settings
+Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger -Settings $settings -Force
 ```
 
-Without these settings Windows skips the task on battery, and a hung run blocks the next ones for 72 hours. To fix a task registered without them:
-
-```powershell
-Set-ScheduledTask cubby-alert -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5))
-```
+Runs on battery; a hung check is stopped after 5 minutes. Re-run to update an existing task.
 
 Linux, macOS:
 
