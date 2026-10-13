@@ -16,7 +16,7 @@ Self-hosted file sync. One Alpine container runs a key-only sshd, every computer
 
 ## 1. Server
 
-Needs Docker with Compose and TCP `2222` reachable by the clients. Docker skips ufw.
+Needs Docker with Compose and TCP `2222` (or `CUBBY_PORT`) reachable by the clients. Docker skips ufw.
 
 ```bash
 git clone https://github.com/jannoguer/cubby.git cubby && cd cubby
@@ -31,7 +31,8 @@ Optional settings: `cp .env.example .env` and uncomment what you need.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CUBBY_BIND_ADDR` | `0.0.0.0` | Address Docker publishes port 2222 on. |
+| `CUBBY_BIND_ADDR` | `0.0.0.0` | Address Docker publishes the port on. |
+| `CUBBY_PORT` | `2222` | Port Docker publishes the service on. |
 | `CUBBY_BACKUP_INTERVAL` | `3600` | Seconds between snapshots. |
 | `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept. |
 
