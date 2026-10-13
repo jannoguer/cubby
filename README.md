@@ -122,8 +122,6 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger -Settings $settings -Force
 ```
 
-Runs on battery; a hung check is stopped after 5 minutes. Re-run to update an existing task.
-
 Linux, macOS:
 
 ```bash
