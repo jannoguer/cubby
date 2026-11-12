@@ -85,7 +85,7 @@ chown cubby:cubby /config/home /shared
 # Files placed into shared/ from the host. -h: never follow a symlink out of the tree.
 find /shared ! -user 1000 -exec chown -h cubby:cubby {} +
 
-# Fail once with the reason instead of restart-looping.
+# Name the reason; Docker restarts the container either way.
 if ! /usr/sbin/sshd -t; then
     echo "ERROR: sshd configuration is invalid (see above)." >&2
     exit 1
