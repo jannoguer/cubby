@@ -25,7 +25,7 @@ chmod 600 "$KEY"
 echo "Host key fingerprint: $(ssh-keygen -y -f "$KEY" | ssh-keygen -lf -)"
 
 install -d -m 755 -o root -g root /private /config/homes
-# Folder owners are the only record of uids, so a revoked key's uid is never handed out again.
+# Folder owners are the only record of uids; a removed folder's uid is free again, its home went with it.
 next=1999
 for d in /private/*; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
@@ -77,7 +77,24 @@ for f in /clients/*.pub; do
     echo "Private folder /private/$name (uid $uid)"
 done
 chmod 644 "$AUTH"/*
-[ "$count" -gt 0 ] || echo "WARNING: no public keys in data/clients/; nobody can log in." >&2
+if [ "$count" -eq 0 ]; then
+    # An empty or unmounted data/clients/ must not take every folder with it.
+    echo "WARNING: no public keys in data/clients/; nobody can log in, and no private folder is removed." >&2
+else
+    # A folder whose .pub is gone goes with it and its home; the snapshots hold it until pruned.
+    for d in /private/*; do
+        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        name=${d##*/}
+        uid=$(stat -c %u "$d")
+        # Only what a key made here: below 2000 or a live user's uid was put there on the host.
+        [ ! -e "/clients/$name.pub" ] && [ "$uid" -ge 2000 ] && ! grep -q ":x:$uid:" /run/cubby/passwd || continue
+        if rm -rf "$d" "/config/homes/$uid"; then
+            echo "Removed /private/$name (uid $uid): $name.pub is gone."
+        else
+            echo "WARNING: could not remove $d" >&2
+        fi
+    done
+fi
 
 # The /config mount shadows the home adduser created in the image.
 mkdir -p /config/home /shared

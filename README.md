@@ -153,6 +153,8 @@ Add: drop the device's `.pub` into `data/clients/`. Revoke: delete it. Then:
 docker compose restart server  # other clients reconnect on their own
 ```
 
+Deleting `<name>.pub` also deletes its [private folder](#6-private-folders) at that restart. To block a key and keep the folder, replace or empty the file's contents instead.
+
 ## 6. Private folders
 
 Each `data/clients/<name>.pub` also gets `/private/<name>`, readable only by the keys in that file.
@@ -180,7 +182,7 @@ mutagen sync create --name=family /path/to/family/folder family@cubby:/private/f
 > [!WARNING]
 > Keep the local folder apart from the `cubby` session's folder, not inside or around it: Mutagen merges them and copies private files into `/shared`.
 
-Revoking keeps the folder. `backup-private` snapshots it into `data/private-backups/`.
+`backup-private` snapshots the folders into `data/private-backups/`. Deleting `<name>.pub` deletes `/private/<name>` at the next restart; the snapshots keep it until they are pruned. To rename, `mv` both the `.pub` and `data/private/<name>` before restarting.
 
 Each folder's uid:
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Smoke test: builds both images and checks login, private folders, snapshots, pruning,
-# restores and the healthcheck. Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
+# restores, folder removal and the healthcheck. Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -117,6 +117,27 @@ on backup-private 'tar -C /backups/keep -cf - laptop/n.txt' | dc exec -T -u 2000
 [ "$(as laptop laptop cat /private/laptop/n.txt)" = secret ] || fail "private restore"
 [ "$(as laptop laptop stat -c %u /private/laptop/n.txt)" = 2000 ] || fail "private restore owner"
 echo "ok: restores"
+
+# A removed .pub takes its folder and home at the next start; an older snapshot still holds it.
+as phone phone 'echo gone > /private/phone/p.txt' || fail "phone cannot write its private folder"
+retry 20 on backup-private 'test -f /backups/latest/phone/p.txt' || fail "no private snapshot of p.txt"
+on server 'test -d /config/homes/2001' || fail "phone has no home at /config/homes/2001"
+seed clients 'rm /v/phone.pub' < /dev/null
+dc restart server
+retry 30 as laptop cubby true || fail "no login after removing phone.pub"
+on server 'test ! -e /private/phone && test ! -e /config/homes/2001' || fail "phone's folder or home outlived its .pub"
+[ "$(as laptop laptop cat /private/laptop/n.txt)" = secret ] || fail "removing phone.pub touched laptop's folder"
+dc logs --no-log-prefix server 2>&1 | grep -qF 'Removed /private/phone (uid 2001)' || fail "server log lacks the removal"
+retry 20 on backup-private 'test ! -e /backups/latest/phone' || fail "no private snapshot after the removal"
+on backup-private 'ls /backups/2*Z/phone/p.txt > /dev/null' || fail "no older snapshot holds the removed folder"
+
+# Without a valid key nothing is removed: an empty data/clients/ would take every folder.
+seed clients 'rm /v/laptop.pub /v/guest.pub' < /dev/null
+dc restart server
+retry 30 on server "nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'" || fail "sshd is not up without keys"
+dc logs --no-log-prefix server 2>&1 | grep -qF 'no private folder is removed' || fail "server log lacks the no-keys warning"
+on server 'test -d /private/laptop' || fail "a start without keys removed a private folder"
+echo "ok: folder removal"
 
 on backup '/entrypoint.sh check' || fail "healthcheck fails on a fresh snapshot"
 dc stop backup
