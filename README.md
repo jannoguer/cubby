@@ -36,7 +36,7 @@ Optional settings: `cp .env.example .env` and uncomment what you need.
 | `CUBBY_BACKUP_INTERVAL` | `3600` | Seconds between snapshots. |
 | `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept. |
 
-Back up `data/config/`: it holds the host key.
+Back up `data/config/ssh_host_keys/` (root-owned): it is the host key. The rest of `data/config/` is Mutagen's working state.
 
 ## 2. Client
 
@@ -49,10 +49,10 @@ scoop install main/mutagen              # Windows
 
 Binaries without a package manager: [releases](https://github.com/mutagen-io/mutagen/releases/latest).
 
-Make a key:
+Make a key, pressing Enter twice for no passphrase:
 
 ```bash
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/cubby
+ssh-keygen -t ed25519 -f "$HOME/.ssh/cubby"
 ```
 
 Put `~/.ssh/cubby.pub` on the server as `data/clients/<device>.pub`, then restart the server, see [Clients: add, revoke](#5-clients-add-revoke).
@@ -92,13 +92,13 @@ Deletions propagate within seconds; the backups are the safety net. Conflicts ar
 
 ## 3. Daemon on boot and alerts
 
-Windows, macOS:
+Windows, macOS, at login:
 
 ```bash
 mutagen daemon register
 ```
 
-Linux:
+Linux, at boot:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -126,28 +126,31 @@ Linux, macOS:
 
 ```bash
 mkdir -p ~/.local/bin && curl -fsSL -o ~/.local/bin/cubby-alert https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.sh && chmod +x ~/.local/bin/cubby-alert
-(crontab -l 2>/dev/null; echo '*/5 * * * * $HOME/.local/bin/cubby-alert') | crontab -
+(crontab -l 2>/dev/null | grep -v cubby-alert; echo '*/5 * * * * $HOME/.local/bin/cubby-alert') | crontab -
 ```
 
 macOS asks once to allow notifications from Script Editor.
 
 ## 4. Backups
 
-The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed. Snapshots are hardlinked, so unchanged files cost no space; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed.
+The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed. Snapshots are hardlinked, so unchanged files cost only a directory entry; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed. With the defaults, hourly and 168 kept, a deletion stays recoverable for at least a week, longer when nothing changes; a larger `CUBBY_BACKUP_KEEP` is cheap.
 
 ```bash
-docker compose ps # backup, backup-private show unhealthy after two missed intervals
+docker compose ps # backup, backup-private show unhealthy after two missed intervals or under 1 GiB free
 docker compose logs -f backup
 ls data/backups/
 ```
 
 Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client. Never copy into `data/shared/` as root: a client can plant a symlink there.
 
+Rename an older snapshot before restoring from it: the restore is itself a change, so the next snapshot can prune the oldest, and only timestamp names are pruned. Leave the newest alone, `latest` points at it. Rename it back or delete it when done.
+
 ```bash
-sudo tar -C data/backups/2026-09-03T030000Z -cf - some/folder | docker compose exec -T -u 1000:1000 server tar -C /shared -xf -
+sudo mv data/backups/2026-09-03T030000Z data/backups/keep
+sudo tar -C data/backups/keep -cf - some/folder | docker compose exec -T -u 1000:1000 server tar -C /shared -xf -
 ```
 
-Offsite copy: pull from another machine, `rsync -aH server:/path/cubby/data/backups/ backups/`.
+Offsite copy: pull from another machine, `rsync -aHS server:/path/cubby/data/backups/ backups/`. `data/private-backups/` is readable only by root.
 
 ## 5. Clients: add, revoke
 
@@ -159,7 +162,7 @@ docker compose restart server # other clients reconnect on their own
 
 ## 6. Private folders
 
-Each `data/clients/<name>.pub` also gets `/private/<name>`, readable only by the keys in that file; list several keys, one per line, to share it. Names: `a-z`, `0-9`, `_`, `-`, up to 32, not `cubby` or `root`. The server log says why it skipped one.
+Each `data/clients/<name>.pub` also gets `/private/<name>`, readable only by the keys in that file; list several keys, one per line, to share it. Names: `a-z`, `0-9`, `_`, `-`, up to 32, not starting with `-`, not a system account such as `cubby`, `root` or `guest`. The server log says why it skipped one.
 
 Sync it logged in as the name:
 
@@ -182,10 +185,11 @@ Each folder's uid:
 # ...
 ```
 
-Restore as that uid, NEVER AS ROOT:
+Restore as that uid, NEVER AS ROOT, renaming the snapshot first as in [Backups](#4-backups):
 
 ```bash
-sudo tar -C data/private-backups/2026-09-03T030000Z -cf - laptop/some/folder | docker compose exec -T -u <uid>:1000 server tar -C /private -xf -
+sudo mv data/private-backups/2026-09-03T030000Z data/private-backups/keep
+sudo tar -C data/private-backups/keep -cf - laptop/some/folder | docker compose exec -T -u <uid>:1000 server tar -C /private -xf -
 ```
 
 ## 7. SFTP
@@ -232,8 +236,9 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT`
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
 client/    alert.sh, windows/alert.ps1, linux/mutagen.service
+test/      smoke test of both images: sh test/test.sh, needs Docker and ssh
 data/      runtime state, ignored by git
-  config/            host key and the sync user's home; back it up
+  config/            ssh_host_keys/ (back it up) and the sync users' homes, Mutagen's working state
   clients/           <device>.pub, read at start
   shared/            the synced tree; contents owned by uid 1000
   private/           <name>/ per client file, each owned by its own uid from 2000 up
