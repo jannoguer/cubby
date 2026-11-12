@@ -1,0 +1,28 @@
+# Override for test/test.sh. Named volumes: Docker Desktop bind mounts do not keep Linux
+# ownership. Own container names: a real deployment on the same host is left alone.
+services:
+  server:
+    container_name: cubbytest-server
+    volumes:
+      - config:/config
+      - shared:/shared
+      - private:/private
+      - clients:/clients:ro
+  backup:
+    container_name: cubbytest-backup
+    volumes:
+      - shared:/shared:ro
+      - backups:/backups
+  backup-private:
+    container_name: cubbytest-backup-private
+    volumes:
+      - private:/shared:ro
+      - private-backups:/backups
+
+volumes:
+  config:
+  shared:
+  private:
+  clients:
+  backups:
+  private-backups:
