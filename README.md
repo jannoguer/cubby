@@ -2,7 +2,7 @@
 
 Self-hosted file sync. One Alpine container runs a key-only sshd, every computer runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, phones copy over [SFTP](#7-sftp), and two more containers keep hardlinked snapshots where no client key can reach them.
 
-**Why:** The best part of Dropbox is forgetting it exists. Files land on the laptop and the desktop, and you stop thinking about it. I wanted that feeling on hardware I own, without a subscription, an account, or a platform that grows unnecessary features every quarter.
+**Why:** The best part of Dropbox is forgetting it exists. Files land on the laptop and the desktop, and you stop thinking about it. I wanted that feeling without relying on Dropbox, or watching it add features nobody asked for every quarter.
 
 1. [Server](#1-server)
 2. [Client](#2-client)
