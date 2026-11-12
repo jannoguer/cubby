@@ -134,9 +134,13 @@ docker compose logs -f backup
 ls data/backups/
 ```
 
-Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client. Never copy into `data/shared/` as root: a client can plant a symlink there.
+Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client.
 
-Rename an older snapshot before restoring from it: the restore is itself a change, so the next snapshot can prune the oldest, and only timestamp names are pruned. Leave the newest alone, `latest` points at it. Rename it back or delete it when done.
+> [!CAUTION]
+> Never copy into `data/shared/` as root: a client can plant a symlink there.
+
+> [!IMPORTANT]
+> Rename an older snapshot before restoring from it: the restore is itself a change, so the next snapshot can prune the oldest, and only timestamp names are pruned. Leave the newest alone, `latest` points at it. Rename it back or delete it when done.
 
 ```bash
 sudo mv data/backups/2026-09-03T030000Z data/backups/keep
@@ -153,23 +157,25 @@ Add: drop the device's `.pub` into `data/clients/`. Revoke: delete it. Then:
 docker compose restart server  # other clients reconnect on their own
 ```
 
-Deleting `<name>.pub` also deletes its [private folder](#6-private-folders) at that restart. To block a key and keep the folder, replace or empty the file's contents instead.
+> [!WARNING]
+> Deleting `<name>.pub` also deletes its [private folder](#6-private-folders) at that restart; its snapshots keep it until they are pruned. To block a key and keep the folder, replace or empty the file's contents instead.
 
 ## 6. Private folders
 
 Each `data/clients/<name>.pub` also gets `/private/<name>`, readable only by the keys in that file.
 
-**ONE `.pub` CAN HOLD SEVERAL KEYS, ONE PER LINE: EVERY KEY IN IT SHARES THE FOLDER.** For example:
-
-```
-data/clients/ana.pub       ana's key
-data/clients/parents.pub   ana's and ben's keys
-data/clients/family.pub    ana's, ben's and eva's keys
-```
-
-- ana sees `/shared`, `/private/ana`, `/private/parents` and `/private/family`
-- ben sees `/shared`, `/private/parents` and `/private/family`
-- eva sees `/shared` and `/private/family`
+> [!TIP]
+> **To share a private folder, put several keys in one `.pub`, one key per line.** For example:
+>
+> ```
+> data/clients/ana.pub      # ana's key
+> data/clients/parents.pub  # ana's and ben's keys
+> data/clients/family.pub   # ana's, ben's and eva's keys
+> ```
+>
+> - ana sees `/shared`, `/private/ana`, `/private/parents` and `/private/family`
+> - ben sees `/shared`, `/private/parents` and `/private/family`
+> - eva sees `/shared` and `/private/family`
 
 Naming rules: `a-z`, `0-9`, `_`, `-`, up to 32, not starting with `-`, not a system account such as `cubby`, `root` or `guest`. If a name breaks them, the server log says why it skipped the folder.
 
@@ -182,7 +188,7 @@ mutagen sync create --name=family /path/to/family/folder family@cubby:/private/f
 > [!WARNING]
 > Keep the local folder apart from the `cubby` session's folder, not inside or around it: Mutagen merges them and copies private files into `/shared`.
 
-`backup-private` snapshots the folders into `data/private-backups/`. Deleting `<name>.pub` deletes `/private/<name>` at the next restart; the snapshots keep it until they are pruned. To rename, `mv` both the `.pub` and `data/private/<name>` before restarting.
+`backup-private` snapshots the folders into `data/private-backups/`. To rename, `mv` both the `.pub` and `data/private/<name>` before restarting.
 
 Each folder's uid:
 
@@ -192,7 +198,10 @@ Each folder's uid:
 # 2001  msi-work-laptop-1
 ```
 
-Restore as that uid, NEVER AS ROOT, renaming the snapshot first as in [Backups](#4-backups):
+> [!CAUTION]
+> Never restore a private folder as root: a client can plant a symlink there.
+
+Restore as that uid, renaming the snapshot first as in [Backups](#4-backups):
 
 ```bash
 sudo mv data/private-backups/2026-09-03T030000Z data/private-backups/keep
