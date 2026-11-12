@@ -36,8 +36,8 @@ Back up `data/config/ssh_host_keys/` (root-owned): it is the host key. The rest 
 Install Mutagen:
 
 ```bash
-brew install mutagen-io/mutagen/mutagen # macOS, Linux
-scoop install main/mutagen              # Windows
+brew install mutagen-io/mutagen/mutagen  # macOS, Linux
+scoop install main/mutagen               # Windows
 ```
 
 Binaries without a package manager: [releases](https://github.com/mutagen-io/mutagen/releases/latest).
@@ -45,10 +45,10 @@ Binaries without a package manager: [releases](https://github.com/mutagen-io/mut
 Make a key, pressing Enter twice for no passphrase:
 
 ```bash
-ssh-keygen -t ed25519 -f "$HOME/.ssh/cubby"
+ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519_cubby"
 ```
 
-Put `~/.ssh/cubby.pub` on the server as `data/clients/<device>.pub`, then restart the server, see [Clients: add, revoke](#5-clients-add-revoke).
+Put `~/.ssh/id_ed25519_cubby.pub` on the server as `data/clients/<name>.pub` (your name, which also names your private folder, see [Private folders](#6-private-folders)), then restart the server, see [Clients: add, revoke](#5-clients-add-revoke).
 
 Add to `~/.ssh/config`:
 
@@ -57,7 +57,7 @@ Host cubby
     HostName SERVER_IP
     Port 2222
     User cubby
-    IdentityFile ~/.ssh/cubby
+    IdentityFile ~/.ssh/id_ed25519_cubby
     IdentitiesOnly yes
     ServerAliveInterval 15
     ServerAliveCountMax 3
@@ -129,7 +129,7 @@ macOS asks once to allow notifications from Script Editor.
 The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed. Snapshots are hardlinked, so unchanged files cost only a directory entry; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed. With the defaults, hourly and 168 kept, a deletion stays recoverable for at least a week, longer when nothing changes; a larger `CUBBY_BACKUP_KEEP` is cheap.
 
 ```bash
-docker compose ps # backup, backup-private show unhealthy after two missed intervals or under 1 GiB free
+docker compose ps  # backup, backup-private show unhealthy after two missed intervals or under 1 GiB free
 docker compose logs -f backup
 ls data/backups/
 ```
@@ -150,17 +150,31 @@ Offsite copy: pull from another machine, `rsync -aHS server:/path/cubby/data/bac
 Add: drop the device's `.pub` into `data/clients/`. Revoke: delete it. Then:
 
 ```bash
-docker compose restart server # other clients reconnect on their own
+docker compose restart server  # other clients reconnect on their own
 ```
 
 ## 6. Private folders
 
-Each `data/clients/<name>.pub` also gets `/private/<name>`, readable only by the keys in that file; list several keys, one per line, to share it. Names: `a-z`, `0-9`, `_`, `-`, up to 32, not starting with `-`, not a system account such as `cubby`, `root` or `guest`. The server log says why it skipped one.
+Each `data/clients/<name>.pub` also gets `/private/<name>`, readable only by the keys in that file.
 
-Sync it logged in as the name:
+**ONE `.pub` CAN HOLD SEVERAL KEYS, ONE PER LINE: EVERY KEY IN IT SHARES THE FOLDER.** For example:
+
+```
+data/clients/ana.pub       ana's key
+data/clients/parents.pub   ana's and ben's keys
+data/clients/family.pub    ana's, ben's and eva's keys
+```
+
+- ana sees `/shared`, `/private/ana`, `/private/parents` and `/private/family`
+- ben sees `/shared`, `/private/parents` and `/private/family`
+- eva sees `/shared` and `/private/family`
+
+Naming rules: `a-z`, `0-9`, `_`, `-`, up to 32, not starting with `-`, not a system account such as `cubby`, `root` or `guest`. If a name breaks them, the server log says why it skipped the folder.
+
+Log in as the folder's name to sync it:
 
 ```bash
-mutagen sync create --name=private /path/to/private/folder laptop@cubby:/private/laptop
+mutagen sync create --name=family /path/to/family/folder family@cubby:/private/family
 ```
 
 > [!WARNING]
