@@ -27,14 +27,7 @@ docker compose up --build -d
 docker compose logs server | grep 'Host key fingerprint'
 ```
 
-Optional settings: `cp .env.example .env` and uncomment what you need.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `CUBBY_BIND_ADDR` | `0.0.0.0` | Address Docker publishes the port on. |
-| `CUBBY_PORT` | `2222` | Port Docker publishes the service on. |
-| `CUBBY_BACKUP_INTERVAL` | `3600` | Seconds between snapshots. |
-| `CUBBY_BACKUP_KEEP` | `168` | Snapshots kept. |
+Optional settings (bind address, port, snapshot interval and count): `cp .env.example .env` and uncomment what you need.
 
 Back up `data/config/ssh_host_keys/` (root-owned): it is the host key. The rest of `data/config/` is Mutagen's working state.
 
@@ -181,8 +174,6 @@ Each folder's uid:
 (cd data/private && stat -c '%u  %n' -- *)
 # 2000  victus-laptop-1
 # 2001  msi-work-laptop-1
-# 2002  xiaomi-phone-1
-# ...
 ```
 
 Restore as that uid, NEVER AS ROOT, renaming the snapshot first as in [Backups](#4-backups):
@@ -194,7 +185,7 @@ sudo tar -C data/private-backups/keep -cf - laptop/some/folder | docker compose 
 
 ## 7. SFTP
 
-Pull and push single files or folders without a sync session. A copy, not a sync: a push overwrites the server's file and Mutagen spreads it to every device; overwritten or deleted files come back only from [backups](#4-backups). The server has no rsync, only OpenSSH.
+Copy single files or folders without a sync session. A push overwrites the server's file and Mutagen spreads it to every device; overwritten or deleted files come back only from [backups](#4-backups). The server has no rsync, only OpenSSH.
 
 On a computer, use the key and `cubby` alias from [Client](#2-client):
 
@@ -205,7 +196,7 @@ sftp cubby                                 # interactive; cd /shared
 scp file laptop@cubby:/private/laptop/     # private folder, logged in as its name
 ```
 
-Android and iOS work the same way through any SFTP app with key login: server `SERVER_IP`, port `2222` (or `CUBBY_PORT`). For the shared folder, set the user to `cubby` and the path to `/shared`. For a private folder, set the user to the folder's name instead, and the path to `/private/<name>`. On first connect, compare the fingerprint the app shows with the server log.
+Android and iOS: any SFTP app with key login, server `SERVER_IP`, port `2222` (or `CUBBY_PORT`). Shared folder: user `cubby`, path `/shared`. Private folder: user `<name>`, path `/private/<name>`. On first connect, compare the fingerprint the app shows with the server log.
 
 Without `ssh-keygen`, make an Ed25519 key pair in the browser at [sshkeygen.dev](https://sshkeygen.dev), or [maxotto-agent.github.io/sshkeygen](https://maxotto-agent.github.io/sshkeygen/) if it is down. Import the private key into the app and register the `.pub` as in [Clients: add, revoke](#5-clients-add-revoke).
 
