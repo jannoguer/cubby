@@ -47,7 +47,8 @@ while :; do
     rm -rf "$incoming"
     # As uid 1000 rsync cannot chown. Du+rwx: a directory copied without owner access could never be pruned.
     # -H -S: hardlinks and sparse files cost what they cost in the source. go-w,a-s: drop client-set bits.
-    set -- -aHS --no-owner --no-group --delete --chmod=Du+rwx,go-w,a-s
+    # The exclude: Mutagen copies each file in under that name, as /config and /shared are separate mounts.
+    set -- -aHS --no-owner --no-group --delete --chmod=Du+rwx,go-w,a-s --exclude='.mutagen-temporary-*'
     unchanged=0
     if [ -d "$DST/latest" ]; then
         # A path rsync cannot read is listed as a change every time, so a failing dry run just snapshots.
