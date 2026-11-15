@@ -42,10 +42,6 @@ on() { docker exec "cubbytest-$1" sh -c "$2"; }
 # seed <volume> <script>: run a script as root with the volume at /v, before the stack starts.
 seed() { docker run --rm -i -u 0 -v "cubbytest_$1:/v" cubbytest-backup sh -c "$2"; }
 
-a=$(grep -o "'{{range .}}.*{{end}}'" client/alert.sh)
-b=$(grep -o "'{{range .}}.*{{end}}'" client/windows/alert.ps1)
-[ "$a" = "$b" ] || fail "alert.sh and alert.ps1 use different templates"
-
 for k in laptop phone guest; do
     ssh-keygen -q -t ed25519 -N "" -f "$tmp/$k"
 done

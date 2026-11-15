@@ -102,9 +102,7 @@ loginctl enable-linger "$USER"
 systemctl --user status mutagen.service
 ```
 
-Alerts: a notification when a session stays disconnected, halted, conflicted or failing for over a minute.
-
-Windows:
+Alerts: a notification when a session stays disconnected, halted, conflicted or failing for over a minute. Windows only:
 
 ```powershell
 New-Item -ItemType Directory -Force $HOME\.local\bin | Out-Null
@@ -114,15 +112,6 @@ $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (Ne
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger -Settings $settings -Force
 ```
-
-Linux, macOS:
-
-```bash
-mkdir -p ~/.local/bin && curl -fsSL -o ~/.local/bin/cubby-alert https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.sh && chmod +x ~/.local/bin/cubby-alert
-(crontab -l 2>/dev/null | grep -v cubby-alert; echo '*/5 * * * * $HOME/.local/bin/cubby-alert') | crontab -
-```
-
-macOS asks once to allow notifications from Script Editor.
 
 ## 4. Backups
 
@@ -251,7 +240,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT`
 ```text
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    alert.sh, windows/alert.ps1, linux/mutagen.service
+client/    windows/alert.ps1, linux/mutagen.service
 test/      smoke test of both images: sh test/test.sh, needs Docker and ssh
 data/      runtime state, ignored by git
   config/            ssh_host_keys/ (back it up) and the sync users' homes, Mutagen's working state
