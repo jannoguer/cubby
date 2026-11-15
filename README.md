@@ -42,10 +42,10 @@ scoop install main/mutagen               # Windows
 
 Binaries without a package manager: [releases](https://github.com/mutagen-io/mutagen/releases/latest).
 
-Make a key, pressing Enter twice for no passphrase:
+Make a key without a passphrase, since Mutagen runs unattended:
 
 ```bash
-ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519_cubby"
+ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519_cubby"
 ```
 
 Put `~/.ssh/id_ed25519_cubby.pub` on the server as `data/clients/<name>.pub` (your name, which also names your private folder, see [Private folders](#6-private-folders)), then restart the server, see [Clients: add, revoke](#5-clients-add-revoke).
