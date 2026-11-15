@@ -95,11 +95,18 @@ Linux, at boot:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-curl -fsSL -o /tmp/mutagen.service https://raw.githubusercontent.com/jannoguer/cubby/main/client/linux/mutagen.service && sed "s|^ExecStart=mutagen|ExecStart=$(command -v mutagen)|" /tmp/mutagen.service > ~/.config/systemd/user/mutagen.service
+cat > ~/.config/systemd/user/mutagen.service <<EOF
+[Service]
+ExecStart=$(command -v mutagen) daemon run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
 mutagen daemon stop
 systemctl --user enable --now mutagen.service
 loginctl enable-linger "$USER"
-systemctl --user status mutagen.service
 ```
 
 Alerts: a notification when a session stays disconnected, halted, conflicted or failing for over a minute. Windows only:
@@ -240,7 +247,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT`
 ```text
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    windows/alert.ps1, linux/mutagen.service
+client/    windows/alert.ps1
 test/      smoke test of both images: sh test/test.sh, needs Docker and ssh
 data/      runtime state, ignored by git
   config/            ssh_host_keys/ (back it up) and the sync users' homes, Mutagen's working state
