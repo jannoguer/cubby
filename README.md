@@ -1,6 +1,6 @@
 # Cubby
 
-Self-hosted file sync. One Alpine container runs a key-only sshd, every computer runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, phones copy over [SFTP](#7-sftp), and two more containers keep hardlinked snapshots where no client key can reach them.
+Self-hosted file sync. One Alpine container runs a key-only sshd, every computer runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, phones copy over [SFTP](#7-sftp), any browser can read the files through an opt-in [web view](#8-web), and two more containers keep hardlinked snapshots where no client key can reach them.
 
 **Why:** The best part of Dropbox is forgetting it exists. Files land on the laptop and the desktop, and you stop thinking about it. I wanted that feeling without relying on Dropbox, or watching it add features nobody asked for every quarter.
 
@@ -11,8 +11,9 @@ Self-hosted file sync. One Alpine container runs a key-only sshd, every computer
 5. [Clients: add, revoke](#5-clients-add-revoke)
 6. [Private folders](#6-private-folders)
 7. [SFTP](#7-sftp)
-8. [Maintenance](#8-maintenance)
-9. [Layout](#9-layout)
+8. [Web](#8-web)
+9. [Maintenance](#9-maintenance)
+10. [Layout](#10-layout)
 
 ## 1. Server
 
@@ -20,8 +21,8 @@ Needs Docker with Compose and TCP `2222` (or `CUBBY_PORT`) reachable by the clie
 
 ```bash
 git clone https://github.com/jannoguer/cubby.git cubby && cd cubby
-mkdir -p data/config data/shared data/clients data/backups data/private-backups
-sudo chown 1000:1000 data/backups
+mkdir -p data/config data/shared data/clients data/backups data/private-backups data/web
+sudo chown 1000:1000 data/backups data/web
 sudo chown 0:0 data/private-backups
 docker compose up --build -d
 docker compose logs server | grep 'Host key fingerprint'
@@ -270,7 +271,27 @@ Android and iOS: any SFTP app with key login, server `SERVER_IP`, port `2222` (o
 
 Without `ssh-keygen`, make an Ed25519 key pair in the browser at [sshkeygen.dev](https://sshkeygen.dev), or [maxotto-agent.github.io/sshkeygen](https://maxotto-agent.github.io/sshkeygen/) if it is down. Import the private key into the app and register the `.pub` as in [Clients: add, revoke](#5-clients-add-revoke).
 
-## 8. Maintenance
+## 8. Web
+
+Read `/shared` from any browser, no key or install: a plain read-only "Index of /" with a `download` link per file (symlinks and dotfiles are not listed), behind a password and a one-time code. Off by default.
+
+Uncomment `COMPOSE_PROFILES=web` in `.env` to include it in every `docker compose` command, then start it and show the credentials:
+
+```bash
+docker compose up --build -d
+docker compose exec web /entrypoint.sh show  # password, seed, otpauth link
+```
+
+The first start writes the credentials to `data/web/credentials`, never to the log. Add the seed to an authenticator app. Rotate: delete that file, `docker compose restart web`, run `show` again.
+
+Log in with the browser's sign-in box: any username (even empty), the four words and the 6-digit code with nothing between, `orbit-velvet-cannon-shrug492817`. Each code works once and a login is remembered for 15 minutes per IP. Three wrong attempts block that IP for 1 hour, and requests are capped at 10 per second. A restart clears both.
+
+Nginx serves plain HTTP on `127.0.0.1:8080` (`CUBBY_WEB_BIND_ADDR`, `CUBBY_WEB_PORT`); put one HTTPS proxy or tunnel in front. It must pass `Authorization` and set `X-Forwarded-For`, and Cubby trusts only the last entry, so a second proxy in a row is not supported. Without the header all visitors share one IP, and one lockout.
+
+> [!CAUTION]
+> Never publish the port beyond the proxy: with `CUBBY_WEB_BIND_ADDR=0.0.0.0` a client could forge `X-Forwarded-For` and get fresh attempts for every guess.
+
+## 9. Maintenance
 
 Update, also monthly for Alpine and OpenSSH security fixes: a plain `--build` reuses the cached `apk add` layer and never gets them.
 
@@ -291,13 +312,14 @@ docker compose logs server | grep 'Host key fingerprint'
 
 Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT` if you set one.
 
-## 9. Layout
+## 10. Layout
 
 ```text
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
+web/       opt-in read-only browser view: nginx with njs, auth.js is the login, listing.js the folder pages, creds.js makes the credentials
 client/    alert.sh, alert.ps1
-test/      smoke test of both images and the alert scripts: sh test/test.sh, needs Docker and ssh
+test/      smoke test of the images and the alert scripts: sh test/test.sh, needs Docker and ssh
 data/      runtime state, ignored by git
   config/            ssh_host_keys/ (back it up) and the sync users' homes, Mutagen's working state
   clients/           <device>.pub, read at start
@@ -305,4 +327,5 @@ data/      runtime state, ignored by git
   private/           <name>/ per client file, each owned by its own uid from 2000 up
   backups/           snapshots named <UTC timestamp>Z, latest is a symlink to the newest
   private-backups/   the same for private/
+  web/               credentials of the web view (0600, plain text), only with the web profile
 ```

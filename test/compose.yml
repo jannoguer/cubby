@@ -18,6 +18,11 @@ services:
     volumes:
       - private:/shared:ro
       - private-backups:/backups
+  web:
+    container_name: cubbytest-web
+    volumes:
+      - shared:/shared:ro
+      - web:/data
 
 volumes:
   config:
@@ -26,3 +31,4 @@ volumes:
   clients:
   backups:
   private-backups:
+  web:

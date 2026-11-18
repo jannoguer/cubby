@@ -1,6 +1,6 @@
 #!/bin/sh
-# Smoke test: checks client/alert.sh against stubs, then builds both images and checks login,
-# private folders, snapshots, pruning, restores, folder removal and the healthcheck.
+# Smoke test: checks client/alert.sh against stubs, then builds the images and checks login,
+# private folders, snapshots, pruning, restores, folder removal, the healthchecks and the web view.
 # Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
 set -eu
 cd "$(dirname "$0")/.."
@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 # Git Bash would rewrite the container paths passed to docker.
 export MSYS_NO_PATHCONV=1
 export CUBBY_BIND_ADDR=127.0.0.1 CUBBY_PORT=22922 CUBBY_BACKUP_INTERVAL=2 CUBBY_BACKUP_KEEP=2
+export COMPOSE_PROFILES=web CUBBY_WEB_PORT=18080
 
 tmp=$(mktemp -d)
 dc() { docker compose -p cubbytest -f docker-compose.yml -f test/compose.yml "$@"; }
@@ -110,6 +111,7 @@ for k in laptop phone guest; do
 done
 echo garbage | seed clients 'cat > /v/bad.pub'
 seed backups 'chown 1000:1000 /v' < /dev/null
+seed web 'chown 1000:1000 /v' < /dev/null
 dc up -d
 
 retry 30 as laptop cubby true || fail "no login as cubby"
@@ -125,6 +127,88 @@ if as phone laptop true 2> /dev/null; then
     fail "the phone key logged in as laptop"
 fi
 echo "ok: login and private folders"
+
+# Web: requests run inside cubbytest-web with busybox wget; X-Forwarded-For stands in for the client IP.
+# code <ip> <user:password> <path>: HTTP status. page <ip> <user:password> <path>: body.
+code() {
+    on web "wget -S -q -O /dev/null --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(printf '%s' "$2" | base64 | tr -d '\n')' 'http://127.0.0.1:8080/$3' 2>&1" |
+        sed -n 's|^ *HTTP/[0-9.]* \([0-9]*\).*|\1|p' | tail -1
+}
+page() {
+    on web "wget -q -O - --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(printf '%s' "$2" | base64 | tr -d '\n')' 'http://127.0.0.1:8080/$3'"
+}
+# method <verb> <ip> <user:password>: status line of a raw request, as busybox wget cannot send PUT.
+method() {
+    on web "printf '$1 /web.txt HTTP/1.0\\r\\nX-Forwarded-For: $2\\r\\nAuthorization: Basic $(printf '%s' "$3" | base64 | tr -d '\n')\\r\\nContent-Length: 1\\r\\n\\r\\nx' | nc -w 2 127.0.0.1 8080" | head -1
+}
+# headers <ip> <user:password> <path>: response headers of a raw GET, as busybox wget follows redirects.
+headers() {
+    on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(printf '%s' "$2" | base64 | tr -d '\n')\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
+}
+# totp <seconds from now>: the 6-digit code for that time.
+totp() { on web "njs -n QuickJS -m -p /web -c \"import {totp} from './totp.js'; console.log(totp('$webseed', Math.floor(Date.now() / 1000) + $1, 6))\""; }
+
+retry 30 on web "wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '" || fail "web does not answer"
+[ "$(on web 'stat -c %a /data/credentials')" = 600 ] || fail "web credentials are not mode 0600"
+shown=$(on web '/entrypoint.sh show')
+pass=$(printf '%s\n' "$shown" | sed -n 's/^password: //p')
+webseed=$(printf '%s\n' "$shown" | sed -n 's/^seed: *//p' | tr -d ' ')
+printf '%s\n' "$pass" | grep -qE '^[a-z]+(-[a-z]+){3}$' || fail "web password is not four words"
+for w in $(printf '%s\n' "$pass" | tr - ' '); do
+    on web "grep -qx $w /web/english.txt" || fail "web password word $w is not in the list"
+done
+printf '%s\n' "$webseed" | grep -qE '^[A-Z2-7]{32}$' || fail "web seed is not 32 base32 characters"
+printf '%s\n' "$shown" | grep -qxF "otpauth://totp/Cubby?secret=$webseed&issuer=Cubby" || fail "web show lacks the otpauth link"
+weblogs=$(dc logs --no-log-prefix web 2>&1)
+printf '%s\n' "$weblogs" | grep -qF -e "$pass" -e "$webseed" && fail "web log holds the password or the seed"
+
+vectors=$(on web "njs -n QuickJS -m -p /web -c \"import {base32, totp} from './totp.js'; const s = base32(Buffer.from('12345678901234567890')); console.log(s); for (const t of [59, 1111111109, 1111111111, 1234567890, 2000000000]) console.log(t + ' ' + totp(s, t, 8))\"")
+# The seed line is RFC 4648 base32, as authenticator apps decode it; a round trip alone would hide a shared bug.
+[ "$vectors" = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+59 94287082
+1111111109 07081804
+1111111111 14050471
+1234567890 89005924
+2000000000 69279037' ] || fail "base32 or RFC 6238 vectors differ: $vectors"
+
+on web "printf 'GET / HTTP/1.0\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | grep -q '^WWW-Authenticate: Basic' || fail "web 401 lacks WWW-Authenticate"
+as laptop cubby 'echo web-ok > /shared/web.txt; ln -s /etc/passwd /shared/link; ln -s / /shared/rootlink
+    touch /shared/.hidden; mkdir /shared/sub; echo amp > "/shared/sub/a&b.txt"'
+good=a:$pass$(totp 0)
+[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web refused the password and current code"
+page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lacks web.txt"
+[ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web download differs"
+[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web forgot the login"
+[ "$(code 10.0.0.2 "$good" '')" = 401 ] || fail "web accepted the login from another IP"
+[ "$(code 10.0.0.1 "b:${good#*:}" '')" = 401 ] || fail "web accepted a spent code under another username"
+[ "$(code 10.0.0.1 "$good" link)" = 403 ] || fail "web served a symlink"
+[ "$(code 10.0.0.1 "$good" rootlink/)" = 404 ] || fail "web listed a symlinked directory"
+page 10.0.0.1 "$good" '' | grep -qE '>(link|rootlink/|\.hidden)<' && fail "web listing shows a symlink or a dotfile"
+page 10.0.0.1 "$good" sub/ | grep -qF '<a href="a%26b.txt">a&amp;b.txt</a>' || fail "web listing does not escape names"
+[ "$(page 10.0.0.1 "$good" 'sub/a%26b.txt?download=1')" = amp ] || fail "web download link differs"
+headers 10.0.0.1 "$good" sub | grep -q '^Location: /sub/' || fail "web directory redirect is not relative"
+headers 10.0.0.1 "$good" 'web.txt?download=1' | grep -q '^Content-Disposition: attachment' || fail "web ?download does not save"
+headers 10.0.0.1 "$good" web.txt | grep -q '^Content-Disposition' && fail "web file opens as a download"
+headers 10.0.0.1 "$good" web.txt | grep -q '^Content-Security-Policy: sandbox' || fail "web file is not sandboxed"
+headers 10.0.0.1 "$good" '' | grep -q '^Content-Security-Policy: sandbox' && fail "web listing is sandboxed, which blocks downloads"
+for verb in PUT DELETE; do
+    case $(method $verb 10.0.0.1 "$good") in *' 403 '*) ;; *) fail "web did not refuse $verb" ;; esac
+done
+[ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web file changed or vanished"
+
+[ "$(code 10.0.0.3 "c:${pass}000000" '')" = 401 ] || fail "web first failure is not 401"
+[ "$(code 10.0.0.3 "c:${pass}000001" '')" = 401 ] || fail "web second failure is not 401"
+[ "$(code 10.0.0.3 "c:wrong-wrong-wrong-wrong$(totp 30)" '')" = 429 ] || fail "web third failure is not 429"
+[ "$(code 10.0.0.3 "c:$pass$(totp 30)" '')" = 429 ] || fail "web let a blocked IP in"
+[ "$(code 10.0.0.4 "c:$pass$(totp 30)" '')" = 200 ] || fail "web blocked another IP"
+as laptop cubby 'rm -r /shared/web.txt /shared/link /shared/rootlink /shared/.hidden /shared/sub'
+
+hc=$(docker inspect --format '{{index .Config.Healthcheck.Test 1}}' cubbytest-web)
+on web "$hc" || fail "web healthcheck fails"
+if COMPOSE_PROFILES= docker compose -f docker-compose.yml config --services | grep -qx web; then
+    fail "web is part of the default stack"
+fi
+echo "ok: web"
 
 as laptop cubby 'echo one > /shared/a.txt'
 retry 20 on backup 'test -f /backups/latest/a.txt' || fail "no snapshot of a.txt"

@@ -84,3 +84,32 @@ services:
     volumes:
       - ./data/private:/shared:ro
       - ./data/private-backups:/backups
+
+  # Opt-in read-only browser view of /shared behind password and TOTP; see README section 8.
+  web:
+    profiles: [web]
+    build: ./web
+    container_name: cubby-web
+    init: true
+    ports:
+      - "${CUBBY_WEB_BIND_ADDR:-127.0.0.1}:${CUBBY_WEB_PORT:-8080}:8080"
+    volumes:
+      - ./data/shared:/shared:ro
+      - ./data/web:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
