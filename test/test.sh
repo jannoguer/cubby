@@ -147,26 +147,29 @@ fi
 echo "ok: login and private folders"
 
 # Web: requests run inside cubbytest-web with busybox wget; X-Forwarded-For stands in for the client IP.
+# basic <user:password>: the Basic auth token.
+basic() { printf '%s' "$1" | base64 | tr -d '\n'; }
 # code <ip> <user:password> <path>: HTTP status. page <ip> <user:password> <path>: body.
 code() {
-    on web "wget -S -q -O /dev/null --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(printf '%s' "$2" | base64 | tr -d '\n')' 'http://127.0.0.1:8080/$3' 2>&1" |
+    on web "wget -S -q -O /dev/null --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(basic "$2")' 'http://127.0.0.1:8080/$3' 2>&1" |
         sed -n 's|^ *HTTP/[0-9.]* \([0-9]*\).*|\1|p' | tail -1
 }
 page() {
-    on web "wget -q -O - --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(printf '%s' "$2" | base64 | tr -d '\n')' 'http://127.0.0.1:8080/$3'"
+    on web "wget -q -O - --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(basic "$2")' 'http://127.0.0.1:8080/$3'"
 }
 # method <verb> <ip> <user:password>: status line of a raw request, as busybox wget cannot send PUT.
 method() {
-    on web "printf '$1 /web.txt HTTP/1.0\\r\\nX-Forwarded-For: $2\\r\\nAuthorization: Basic $(printf '%s' "$3" | base64 | tr -d '\n')\\r\\nContent-Length: 1\\r\\n\\r\\nx' | nc -w 2 127.0.0.1 8080" | head -1
+    on web "printf '$1 /web.txt HTTP/1.0\\r\\nX-Forwarded-For: $2\\r\\nAuthorization: Basic $(basic "$3")\\r\\nContent-Length: 1\\r\\n\\r\\nx' | nc -w 2 127.0.0.1 8080" | head -1
 }
 # headers <ip> <user:password> <path>: response headers of a raw GET, as busybox wget follows redirects.
 headers() {
-    on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(printf '%s' "$2" | base64 | tr -d '\n')\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
+    on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(basic "$2")\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
 }
+webup="wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '"
 # totp <seconds from now>: the 6-digit code for that time.
 totp() { on web "njs -n QuickJS -m -p /web -c \"import {totp} from './totp.js'; console.log(totp('$webseed', Math.floor(Date.now() / 1000) + $1, 6))\""; }
 
-retry 30 on web "wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '" || fail "web does not answer"
+retry 30 on web "$webup" || fail "web does not answer"
 [ "$(on web 'stat -c %a /data/credentials')" = 600 ] || fail "web credentials are not mode 0600"
 shown=$(on web '/entrypoint.sh show')
 pass=$(printf '%s\n' "$shown" | sed -n 's/^password: //p')
@@ -226,7 +229,7 @@ done
 as laptop cubby 'rm -r /shared/web.txt /shared/link /shared/rootlink /shared/.hidden /shared/sub'
 
 dc restart web
-retry 30 on web "wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '" || fail "web does not answer after a restart"
+retry 30 on web "$webup" || fail "web does not answer after a restart"
 [ "$(on web '/entrypoint.sh show')" = "$shown" ] || fail "web credentials changed on restart"
 hc=$(docker inspect --format '{{index .Config.Healthcheck.Test 1}}' cubbytest-web)
 on web "$hc" || fail "web healthcheck fails"
