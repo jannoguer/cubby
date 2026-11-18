@@ -5,6 +5,20 @@ KEYDIR=/config/ssh_host_keys
 KEY=$KEYDIR/ssh_host_ed25519_key
 AUTH=/run/cubby/authorized_keys
 
+die() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+# A planted symlink must never pass for a private folder.
+real_dir() {
+    [ -d "$1" ] && [ ! -L "$1" ]
+}
+
+uid_taken() {
+    grep -q ":x:$1:" /run/cubby/passwd
+}
+
 # /etc/passwd and /etc/shadow link here, so this comes before any user lookup.
 mkdir -p "$AUTH"
 cp /etc/passwd.base /run/cubby/passwd
@@ -15,10 +29,7 @@ chmod 600 /run/cubby/shadow
 install -d -m 755 -o root -g root /config
 # Before that fix the sync user could plant links here, which root would follow below.
 for p in "$KEYDIR" "$KEY"; do
-    if [ -L "$p" ]; then
-        echo "ERROR: $p is a symlink; the host key may have been replaced. Rotate it (README section 9)." >&2
-        exit 1
-    fi
+    [ ! -L "$p" ] || die "$p is a symlink; the host key may have been replaced. Rotate it (README section 9)."
 done
 for p in /config/home /config/homes; do
     if [ -L "$p" ]; then
@@ -29,10 +40,7 @@ done
 install -d -m 700 -o root -g root "$KEYDIR"
 [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N "" -f "$KEY"
 # Generated here as root, always; any other owner means the key was replaced.
-if [ "$(stat -c %u "$KEY")" != 0 ]; then
-    echo "ERROR: $KEY is not owned by root; the host key may have been replaced. Rotate it (README section 9)." >&2
-    exit 1
-fi
+[ "$(stat -c %u "$KEY")" = 0 ] || die "$KEY is not owned by root; the host key may have been replaced. Rotate it (README section 9)."
 chmod 600 "$KEY"
 # From the key sshd serves; the .pub sidecar is not kept in step with it.
 echo "Host key fingerprint: $(ssh-keygen -y -f "$KEY" | ssh-keygen -lf -)"
@@ -41,7 +49,7 @@ install -d -m 755 -o root -g root /private /config/homes
 # Folder owners are the only record of uids; a removed folder's uid is free again, its home went with it.
 next=1999
 for d in /private/*; do
-    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    real_dir "$d" || continue
     u=$(stat -c %u "$d")
     [ "$u" -gt "$next" ] && next=$u
 done
@@ -58,28 +66,28 @@ for f in /clients/*.pub; do
     fi
     keys=$(tr -d '\r' < "$f")
     printf '%s\n' "$keys" >> "$AUTH/cubby"
-    echo "Authorized key ${f##*/}: $fp"
+    pub=${f##*/}
+    echo "Authorized key $pub: $fp"
     count=$((count + 1))
 
-    name=${f##*/}
-    name=${name%.pub}
+    name=${pub%.pub}
     if ! printf '%s' "$name" | grep -qx '[a-z0-9_][a-z0-9_-]\{0,31\}' || grep -q "^$name:" /run/cubby/passwd; then
-        echo "WARNING: no private folder for ${f##*/}: '$name' is taken or not a user name (a-z 0-9 _ -, up to 32)." >&2
+        echo "WARNING: no private folder for $pub: '$name' is taken or not a user name (a-z 0-9 _ -, up to 32)." >&2
         continue
     fi
     d=/private/$name
-    if [ -d "$d" ] && [ ! -L "$d" ]; then
+    if real_dir "$d"; then
         uid=$(stat -c %u "$d")
     elif [ -e "$d" ] || [ -L "$d" ]; then
-        echo "WARNING: no private folder for ${f##*/}: $d is not a directory." >&2
+        echo "WARNING: no private folder for $pub: $d is not a directory." >&2
         continue
     else
         next=$((next + 1))
         uid=$next
     fi
     # Below 2000 was made on the host (root, cubby); a uid already in passwd would open two folders to one key.
-    if [ "$uid" -lt 2000 ] || grep -q ":x:$uid:" /run/cubby/passwd; then
-        echo "WARNING: no private folder for ${f##*/}: $d is owned by uid $uid, which is reserved or in use; chown it to a free uid of 2000 or more." >&2
+    if [ "$uid" -lt 2000 ] || uid_taken "$uid"; then
+        echo "WARNING: no private folder for $pub: $d is owned by uid $uid, which is reserved or in use; chown it to a free uid of 2000 or more." >&2
         continue
     fi
     home=/config/homes/$uid
@@ -101,11 +109,11 @@ if [ "$count" -eq 0 ]; then
 else
     # A folder whose .pub is gone goes with it and its home; the snapshots hold it until pruned.
     for d in /private/*; do
-        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        real_dir "$d" || continue
         name=${d##*/}
         uid=$(stat -c %u "$d")
         # Only what a key made here: below 2000 or a live user's uid was put there on the host.
-        [ ! -e "/clients/$name.pub" ] && [ "$uid" -ge 2000 ] && ! grep -q ":x:$uid:" /run/cubby/passwd || continue
+        [ ! -e "/clients/$name.pub" ] && [ "$uid" -ge 2000 ] && ! uid_taken "$uid" || continue
         if rm -rf "$d" "/config/homes/$uid"; then
             echo "Removed /private/$name (uid $uid): $name.pub is gone."
         else
@@ -121,17 +129,11 @@ chown -h cubby:cubby /config/home /shared
 find /shared ! -user 1000 -exec chown -h cubby:cubby {} +
 
 # Name the reason; Docker restarts the container either way.
-if ! /usr/sbin/sshd -t; then
-    echo "ERROR: sshd configuration is invalid (see above)." >&2
-    exit 1
-fi
+/usr/sbin/sshd -t || die "sshd configuration is invalid (see above)."
 # The drop-in only applies through the Include in Alpine's stock sshd_config; check the effective values.
 effective=$(/usr/sbin/sshd -T)
 for want in 'allowgroups cubby' 'authorizedkeysfile /run/cubby/authorized_keys/%u' \
     'authenticationmethods publickey' 'permitrootlogin no' 'passwordauthentication no' 'persourcemaxstartups 10'; do
-    if ! printf '%s\n' "$effective" | grep -qx "$want"; then
-        echo "ERROR: sshd is not applying '$want'; the drop-in in /etc/ssh/sshd_config.d is being ignored." >&2
-        exit 1
-    fi
+    printf '%s\n' "$effective" | grep -qx "$want" || die "sshd is not applying '$want'; the drop-in in /etc/ssh/sshd_config.d is being ignored."
 done
 exec /usr/sbin/sshd -D -e
