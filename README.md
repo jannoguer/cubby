@@ -315,17 +315,17 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT`
 ## 10. Layout
 
 ```text
-server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
-backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-web/       opt-in read-only browser view: nginx with njs, auth.js is the login, listing.js the folder pages, creds.js makes the credentials
-client/    alert.sh, alert.ps1
-test/      smoke test of the images and the alert scripts: sh test/test.sh, needs Docker and ssh
-data/      runtime state, ignored by git
-  config/            ssh_host_keys/ (back it up) and the sync users' homes, Mutagen's working state
-  clients/           <device>.pub, read at start
-  shared/            the synced tree; contents owned by uid 1000
-  private/           <name>/ per client file, each owned by its own uid from 2000 up
-  backups/           snapshots named <UTC timestamp>Z, latest is a symlink to the newest
-  private-backups/   the same for private/
-  web/               credentials of the web view (0600, plain text), only with the web profile
+server/    sshd image; its entrypoint creates the users and keys from data/clients/ at each start
+backup/    snapshot image, also the healthcheck (section 4)
+web/       opt-in read-only browser view: nginx with njs, behind password and one-time code (section 8)
+client/    alert.sh (Linux, macOS) and alert.ps1 (Windows): notify when a sync stops (section 3)
+test/      smoke test of the images and alerts: sh test/test.sh (needs Docker, ssh and ssh-keygen)
+data/      runtime state, git-ignored
+  config/            ssh_host_keys/ (back it up) and Mutagen's working state
+  clients/           <name>.pub, one per client or shared folder (section 5)
+  shared/            the synced tree, owned by uid 1000
+  private/           <name>/ folders, one uid each from 2000 (section 6)
+  backups/           snapshots of shared/; latest points to the newest
+  private-backups/   snapshots of private/
+  web/               web view credentials, plain text (0600); only with the web profile
 ```
