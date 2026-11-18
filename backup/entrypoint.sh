@@ -1,6 +1,7 @@
 #!/bin/sh
 # Hardlinked rsync snapshots of /shared into /backups every CUBBY_BACKUP_INTERVAL seconds,
 # skipped when nothing changed; the newest CUBBY_BACKUP_KEEP are kept, /backups/latest points at the newest.
+# Pruning waits while a restore holds a flock on /backups.
 # "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals or under 1 GiB is free.
 set -eu
 
@@ -80,21 +81,29 @@ while :; do
         esac
     fi
 
-    # Lexical glob order is chronological for these names.
-    n=0
-    for d in "$DST"/????-??-??T??????Z; do
-        [ -d "$d" ] && n=$((n + 1))
-    done
-    for d in "$DST"/????-??-??T??????Z; do
-        [ "$n" -gt "$KEEP" ] || break
-        [ -d "$d" ] || continue
-        if rm -rf "$d"; then
-            echo "[$ts] pruned ${d##*/}"
-        else
-            echo "[$ts] WARNING: could not prune ${d##*/}" >&2
-        fi
-        n=$((n - 1))
-    done
+    # A restore holds a lock on $DST while it reads a snapshot (README section 4); prune on a later run.
+    exec 9< "$DST"
+    if flock -n 9; then
+        # Lexical glob order is chronological for these names.
+        n=0
+        for d in "$DST"/????-??-??T??????Z; do
+            [ -d "$d" ] && n=$((n + 1))
+        done
+        for d in "$DST"/????-??-??T??????Z; do
+            [ "$n" -gt "$KEEP" ] || break
+            [ -d "$d" ] || continue
+            if rm -rf "$d"; then
+                echo "[$ts] pruned ${d##*/}"
+            else
+                echo "[$ts] WARNING: could not prune ${d##*/}" >&2
+            fi
+            n=$((n - 1))
+        done
+    else
+        echo "[$ts] a restore holds $DST; pruning postponed"
+    fi
+    # Closing releases the lock; left open, the sleep below would inherit and hold it.
+    exec 9<&-
 
     wait=$((INTERVAL - ($(date +%s) - start)))
     [ "$wait" -ge 1 ] || wait=1

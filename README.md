@@ -180,18 +180,16 @@ docker compose logs -f backup
 ls data/backups/
 ```
 
-Restore by unpacking a snapshot into the container as the sync user, the copy syncs to every client.
+Restore by unpacking a snapshot into the container as the sync user, the copy syncs to every client. `flock` (util-linux) locks `data/backups` while `tar` reads: the restore makes new snapshots, and their pruning waits until it ends, so even the oldest snapshot stays readable.
 
 > [!CAUTION]
 > Never copy into `data/shared/` as root: a client can plant a symlink there.
 
-> [!IMPORTANT]
-> Restoring from one of the oldest snapshots? Rename it first: snapshots during the restore prune the oldest, but only timestamp names. Never rename the newest: the healthcheck and hardlinking need `latest`, which points at it.
-
 ```bash
-sudo mv data/backups/2026-09-03T030000Z data/backups/keep
-sudo tar -C data/backups/keep -cf - some/folder | docker compose exec -T -u 1000:1000 server tar -C /shared -xf -
+sudo flock data/backups tar -C data/backups/2026-09-03T030000Z -cf - some/folder | docker compose exec -T -u 1000:1000 server tar -C /shared -xf -
 ```
+
+While the lock is held, the backup log says `pruning postponed` and the next run catches up. To keep a snapshot for good, rename it to anything but a timestamp: only timestamp names are pruned.
 
 Offsite copy: pull from another machine, `rsync -aHS server:/path/cubby/data/backups/ backups/`. `data/private-backups/` is readable only by root.
 
@@ -247,11 +245,10 @@ Each folder's uid:
 > [!CAUTION]
 > Never restore a private folder as root: a client can plant a symlink there.
 
-Restore as that uid, rename the snapshot first if it is one of the oldest, as in [Backups](#4-backups):
+Restore as that uid, under the lock on `data/private-backups`, as in [Backups](#4-backups):
 
 ```bash
-sudo mv data/private-backups/2026-09-03T030000Z data/private-backups/keep
-sudo tar -C data/private-backups/keep -cf - laptop/some/folder | docker compose exec -T -u <uid>:1000 server tar -C /private -xf -
+sudo flock data/private-backups tar -C data/private-backups/2026-09-03T030000Z -cf - laptop/some/folder | docker compose exec -T -u <uid>:1000 server tar -C /private -xf -
 ```
 
 ## 7. SFTP

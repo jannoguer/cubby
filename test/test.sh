@@ -1,6 +1,6 @@
 #!/bin/sh
 # Smoke test: checks client/alert.sh against stubs, then builds the images and checks login,
-# private folders, snapshots, pruning, restores, folder removal, startup guards, backup failures,
+# private folders, snapshots, pruning, the restore lock, restores, folder removal, startup guards, backup failures,
 # the healthchecks and the web view.
 # Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
 set -eu
@@ -258,16 +258,44 @@ on backup '[ "$(ls -d /backups/2*Z | wc -l)" -eq 2 ]' || fail "more than CUBBY_B
 on backup 'test -f /backups/keep/a.txt' || fail "the renamed snapshot was pruned"
 echo "ok: prune and pin"
 
+# held <service> <user> <file>: while a restore holds the lock on /backups, new snapshots prune nothing;
+# once it is released, pruning catches up and the loop leaves the lock free while it sleeps.
+held() {
+    svc=$1 user=$2 file=$3
+    docker exec -d "cubbytest-$svc" flock /backups sleep 31
+    retry 10 on "$svc" 'exec 9< /backups; ! flock -n 9' || fail "$svc: the restore lock was not taken"
+    first=$(on "$svc" 'ls -d /backups/2*Z | head -1')
+    for i in 1 2; do
+        prev=$(on "$svc" 'readlink /backups/latest')
+        as laptop "$user" "echo $i > $file"
+        retry 20 on "$svc" "[ \"\$(readlink /backups/latest)\" != $prev ]" || fail "$svc: no snapshot while the lock was held"
+    done
+    on "$svc" "test -d $first" || fail "$svc: a snapshot was pruned while a restore held the lock"
+    on "$svc" '[ "$(ls -d /backups/2*Z | wc -l)" -gt 2 ]' || fail "$svc: snapshots were pruned while a restore held the lock"
+    dc logs --no-log-prefix "$svc" 2>&1 | grep -qF 'pruning postponed' || fail "$svc: log lacks the postponed pruning"
+    docker exec "cubbytest-$svc" pkill -f 'sleep 31'
+    retry 20 on "$svc" '[ "$(ls -d /backups/2*Z | wc -l)" -eq 2 ]' || fail "$svc: pruning did not resume after the restore"
+    on "$svc" "test ! -e $first" || fail "$svc: the oldest snapshot outlived the catch-up"
+    retry 5 on "$svc" 'flock -n /backups true' || fail "$svc: the backup loop keeps the lock between runs"
+    [ "$(docker inspect -f '{{.RestartCount}}' "cubbytest-$svc")" = 0 ] || fail "$svc: the backup loop restarted"
+}
+held backup cubby /shared/e.txt
+held backup-private laptop /private/laptop/e.txt
+echo "ok: restore lock"
+
+# Restores as in the README: under the lock, from the oldest snapshot, the one pruning would take next.
 as laptop cubby 'rm /shared/a.txt'
-on backup 'tar -C /backups/keep -cf - a.txt' | dc exec -T -u 1000:1000 server tar -C /shared -xf -
+retry 20 on backup '[ ! -e /backups/latest/a.txt ] && [ "$(ls -d /backups/2*Z | wc -l)" -eq 2 ]' || fail "no snapshot after deleting a.txt"
+snap=$(on backup 'ls -d /backups/2*Z | head -1')
+on backup "test -f $snap/a.txt" || fail "the oldest snapshot lacks a.txt"
+on backup "flock /backups tar -C $snap -cf - a.txt" | dc exec -T -u 1000:1000 server tar -C /shared -xf -
 [ "$(as laptop cubby cat /shared/a.txt)" = one ] || fail "shared restore"
 
 retry 20 on backup-private 'test -f /backups/latest/laptop/n.txt' || fail "no private snapshot of n.txt"
 snap=$(on backup-private 'readlink /backups/latest')
 as laptop laptop 'rm /private/laptop/n.txt'
 retry 20 on backup-private "[ \"\$(readlink /backups/latest)\" != $snap ]" || fail "no private snapshot after the deletion"
-on backup-private "mv /backups/$snap /backups/keep"
-on backup-private 'tar -C /backups/keep -cf - laptop/n.txt' | dc exec -T -u 2000:1000 server tar -C /private -xf -
+on backup-private "flock /backups tar -C /backups/$snap -cf - laptop/n.txt" | dc exec -T -u 2000:1000 server tar -C /private -xf -
 [ "$(as laptop laptop cat /private/laptop/n.txt)" = secret ] || fail "private restore"
 [ "$(as laptop laptop stat -c %u /private/laptop/n.txt)" = 2000 ] || fail "private restore owner"
 echo "ok: restores"
