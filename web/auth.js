@@ -47,8 +47,7 @@ function verify(header) {
             counter = c;
         }
     }
-    const passwordOk = equal(password, creds.password);
-    return passwordOk ? counter : -1;
+    return equal(password, creds.password) ? counter : -1;
 }
 
 function check(r) {

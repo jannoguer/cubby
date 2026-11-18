@@ -36,7 +36,7 @@ function render(r) {
         let stat;
         try {
             stat = fs.lstatSync(dir);
-        } catch (e) {
+        } catch {
             return notFound(r);
         }
         if (!stat.isDirectory()) {
@@ -53,7 +53,7 @@ function render(r) {
         let stat;
         try {
             stat = fs.lstatSync(dir + '/' + e.name);
-        } catch (err) {
+        } catch {
             // A name that is not valid UTF-8 comes back lossy and cannot be looked up; skip it, not the page.
             continue;
         }
