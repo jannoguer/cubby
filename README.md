@@ -125,7 +125,7 @@ Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger -Settings $
 
 </details>
 
-<details><summary>Linux</summary>
+<details><summary>Linux (untested)</summary>
 
 ```bash
 mkdir -p ~/.local/bin ~/.config/systemd/user
