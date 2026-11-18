@@ -319,6 +319,25 @@ has '/private/a is not a directory.' "server followed a symlink as a private fol
 has '/private/b is owned by uid 1500, which is reserved or in use' "server took a folder with a reserved uid"
 has '/private/c is owned by uid 1000, which is reserved or in use' "server took a folder owned by the shared user"
 has 'uid_b=1500 uid_c=1000 uid_tmp=0' "server changed the owner of a folder it refused"
+
+# A /config once owned by the sync user may hold links and files it planted before root took it.
+out=$(oneshot server 'mkdir -p /shared/k && ln -s /shared/k /config/ssh_host_keys
+    timeout 3 /entrypoint.sh; echo rc=$?; ls /shared/k | wc -l | sed "s/^ */keys=/"')
+has 'ssh_host_keys is a symlink' "server followed a symlinked host key directory"
+has rc=1 "server kept running with a symlinked host key directory"
+has keys=0 "server wrote the host key through a symlink"
+out=$(oneshot server "mkdir -p /clients /private/a /config/homes/2001 /srv/victim
+    echo '$(cat "$tmp/laptop.pub")' > /clients/a.pub
+    chown 2001 /private/a; chown 2002 /srv/victim; rm -r /config/home; ln -s /srv/victim /config/home
+    echo planted > /config/homes/2001/.profile; chown 1000 /config/homes/2001/.profile
+    timeout 3 /entrypoint.sh
+    test -e /config/homes/2001/.profile && echo profile=kept
+    test -L /config/home && echo home=link
+    echo uid_victim=\$(stat -c %u /srv/victim) uid_home=\$(stat -c %u /config/home)")
+has 'removed /config/homes/2001: it held files not owned by uid 2001' "server kept a home with a planted file"
+has 'removed the symlink /config/home' "server kept a symlinked /config/home"
+has 'uid_victim=2002 uid_home=1000' "server chowned through a planted /config/home link"
+printf '%s\n' "$out" | grep -qE 'profile=kept|home=link' && fail "planted /config entries survived a start"
 echo "ok: server guards"
 
 # su nobody: the backup runs unprivileged, so root-only files are unreadable to it.

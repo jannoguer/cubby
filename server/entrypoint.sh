@@ -13,6 +13,19 @@ chmod 600 /run/cubby/shadow
 
 # A uid-1000-owned /config would let the sync user swap the key directory; root takes it.
 install -d -m 755 -o root -g root /config
+# Before that fix the sync user could plant links here, which root would follow below.
+for p in "$KEYDIR" "$KEY"; do
+    if [ -L "$p" ]; then
+        echo "ERROR: $p is a symlink; the host key may have been replaced. Rotate it (README section 9)." >&2
+        exit 1
+    fi
+done
+for p in /config/home /config/homes; do
+    if [ -L "$p" ]; then
+        rm "$p"
+        echo "WARNING: removed the symlink $p." >&2
+    fi
+done
 install -d -m 700 -o root -g root "$KEYDIR"
 [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N "" -f "$KEY"
 # Generated here as root, always; any other owner means the key was replaced.
@@ -70,6 +83,11 @@ for f in /clients/*.pub; do
         continue
     fi
     home=/config/homes/$uid
+    # A home holds only what $name wrote; anything else was planted while /config was the sync user's.
+    if [ -L "$home" ] || { [ -d "$home" ] && [ -n "$(find "$home" -mindepth 1 ! -user "$uid" | head -n 1)" ]; }; then
+        rm -rf "$home"
+        echo "WARNING: removed $home: it held files not owned by uid $uid." >&2
+    fi
     install -d -m 700 -o "$uid" -g 1000 "$d" "$home"
     echo "$name:x:$uid:1000::$home:/bin/sh" >> /run/cubby/passwd
     echo "$name:*:::::::" >> /run/cubby/shadow
@@ -98,7 +116,7 @@ fi
 
 # The /config mount shadows the home adduser created in the image.
 mkdir -p /config/home /shared
-chown cubby:cubby /config/home /shared
+chown -h cubby:cubby /config/home /shared
 # Files placed into shared/ from the host. -h: never follow a symlink out of the tree.
 find /shared ! -user 1000 -exec chown -h cubby:cubby {} +
 
