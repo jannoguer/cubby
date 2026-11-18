@@ -1,6 +1,7 @@
 #!/bin/sh
 # Smoke test: checks client/alert.sh against stubs, then builds the images and checks login,
-# private folders, snapshots, pruning, restores, folder removal, the healthchecks and the web view.
+# private folders, snapshots, pruning, restores, folder removal, startup guards, backup failures,
+# the healthchecks and the web view.
 # Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
 set -eu
 cd "$(dirname "$0")/.."
@@ -90,6 +91,12 @@ fi
 rm "$h/notify-fails"
 alert Darwin 1 "$down"
 notified osascript "Mutagen isn't running."
+alert Linux 0 'false "halted-on-root-deletion" 0 0 0 0 0 '
+notified 'Stopped, the folder was deleted on one side.'
+alert Linux 0 'false "watching" 1 0 0 0 0 '
+notified 'Conflicts to resolve: 1.'
+alert Linux 1 'Error: permission denied'
+notified "Can't check sync (permission denied)."
 echo "ok: alert"
 
 for k in laptop phone guest; do
@@ -110,6 +117,7 @@ for k in laptop phone guest; do
     seed clients "cat > /v/$k.pub" < "$tmp/$k.pub"
 done
 echo garbage | seed clients 'cat > /v/bad.pub'
+seed clients 'cat > /v/Upper.pub' < "$tmp/guest.pub"
 seed backups 'chown 1000:1000 /v' < /dev/null
 seed web 'chown 1000:1000 /v' < /dev/null
 dc up -d
@@ -117,7 +125,8 @@ dc up -d
 retry 30 as laptop cubby true || fail "no login as cubby"
 logs=$(dc logs --no-log-prefix server 2>&1)
 for want in 'Host key fingerprint: ' '/clients/bad.pub is not a public key; skipped.' \
-    "no private folder for guest.pub: 'guest' is taken"; do
+    "no private folder for guest.pub: 'guest' is taken" \
+    "no private folder for Upper.pub: 'Upper' is taken or not a user name"; do
     printf '%s\n' "$logs" | grep -qF "$want" || fail "server log lacks: $want"
 done
 [ "$(as laptop cubby id -u)" = 1000 ] || fail "cubby is not uid 1000"
@@ -125,6 +134,15 @@ as laptop laptop 'echo secret > /private/laptop/n.txt' || fail "laptop cannot wr
 [ "$(as laptop laptop stat -c %u /private/laptop)" = 2000 ] || fail "/private/laptop is not uid 2000"
 if as phone laptop true 2> /dev/null; then
     fail "the phone key logged in as laptop"
+fi
+if as laptop root true 2> /dev/null; then
+    fail "a client key logged in as root"
+fi
+if as laptop Upper true 2> /dev/null; then
+    fail "a key logged in as a name that is not a user"
+fi
+if as laptop cubby 'cat /private/laptop/n.txt' 2> /dev/null; then
+    fail "the shared user read a private folder"
 fi
 echo "ok: login and private folders"
 
@@ -201,8 +219,12 @@ done
 [ "$(code 10.0.0.3 "c:wrong-wrong-wrong-wrong$(totp 30)" '')" = 429 ] || fail "web third failure is not 429"
 [ "$(code 10.0.0.3 "c:$pass$(totp 30)" '')" = 429 ] || fail "web let a blocked IP in"
 [ "$(code 10.0.0.4 "c:$pass$(totp 30)" '')" = 200 ] || fail "web blocked another IP"
+[ "$(code 10.0.0.5 "d:$pass$(totp -90)" '')" = 401 ] || fail "web accepted a code from three steps ago"
 as laptop cubby 'rm -r /shared/web.txt /shared/link /shared/rootlink /shared/.hidden /shared/sub'
 
+dc restart web
+retry 30 on web "wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '" || fail "web does not answer after a restart"
+[ "$(on web '/entrypoint.sh show')" = "$shown" ] || fail "web credentials changed on restart"
 hc=$(docker inspect --format '{{index .Config.Healthcheck.Test 1}}' cubbytest-web)
 on web "$hc" || fail "web healthcheck fails"
 if COMPOSE_PROFILES= docker compose -f docker-compose.yml config --services | grep -qx web; then
@@ -261,13 +283,75 @@ retry 20 on backup-private 'test ! -e /backups/latest/phone' || fail "no private
 on backup-private 'ls /backups/2*Z/phone/p.txt > /dev/null' || fail "no older snapshot holds the removed folder"
 
 # Without a valid key nothing is removed: an empty data/clients/ would take every folder.
-seed clients 'rm /v/laptop.pub /v/guest.pub' < /dev/null
+seed clients 'rm /v/laptop.pub /v/guest.pub /v/Upper.pub' < /dev/null
 dc restart server
 retry 30 on server "nc -w 2 127.0.0.1 22 </dev/null | grep -q '^SSH-'" || fail "sshd is not up without keys"
 dc logs --no-log-prefix server 2>&1 | grep -qF 'no private folder is removed' || fail "server log lacks the no-keys warning"
 on server 'test -d /private/laptop' || fail "a start without keys removed a private folder"
 echo "ok: folder removal"
 
+# Startup guards, each in a throwaway container from the built images: nothing here touches the stack above.
+# oneshot <image> <script> [docker args]: run a script as root and print its output.
+oneshot() {
+    img=$1 script=$2
+    shift 2
+    docker run --rm -u 0 "$@" --entrypoint sh "cubbytest-$img" -c "$script" 2>&1
+}
+# has <text> <message>: $out contains the text.
+has() { printf '%s\n' "$out" | grep -qF -- "$1" || fail "$2"; }
+
+# The first start makes the key; the second finds it owned by the wrong uid.
+out=$(oneshot server 'timeout 3 /entrypoint.sh
+    chown 1000 /config/ssh_host_keys/ssh_host_ed25519_key
+    /entrypoint.sh; echo rc=$?')
+has 'is not owned by root' "server accepted a host key that is not root's"
+has rc=1 "server kept running with a replaced host key"
+out=$(oneshot server "sed -i 's/^PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config.d/10-cubby.conf
+    /entrypoint.sh; echo rc=\$?")
+has "sshd is not applying 'permitrootlogin no'" "server did not check the effective sshd values"
+has rc=1 "server kept running with a weakened sshd config"
+out=$(oneshot server "mkdir -p /clients /private
+    echo '$(cat "$tmp/laptop.pub")' > /clients/a.pub; cp /clients/a.pub /clients/b.pub; cp /clients/a.pub /clients/c.pub
+    ln -s /tmp /private/a; mkdir /private/b /private/c; chown 1500 /private/b; chown 1000 /private/c
+    timeout 3 /entrypoint.sh
+    echo uid_b=\$(stat -c %u /private/b) uid_c=\$(stat -c %u /private/c) uid_tmp=\$(stat -c %u /tmp)")
+has '/private/a is not a directory.' "server followed a symlink as a private folder"
+has '/private/b is owned by uid 1500, which is reserved or in use' "server took a folder with a reserved uid"
+has '/private/c is owned by uid 1000, which is reserved or in use' "server took a folder owned by the shared user"
+has 'uid_b=1500 uid_c=1000 uid_tmp=0' "server changed the owner of a folder it refused"
+echo "ok: server guards"
+
+# su nobody: the backup runs unprivileged, so root-only files are unreadable to it.
+# timeout runs inside su: killing su alone would leave the loop running and the container up.
+run_backup="su -s /bin/sh nobody -c 'timeout 5 /entrypoint.sh'"
+out=$(oneshot backup "mkdir -p /shared /backups; echo ok > /shared/ok; echo no > /shared/secret
+    chown nobody /shared/ok /backups; chown 0:0 /shared/secret; chmod 000 /shared/secret
+    $run_backup; [ -f /backups/latest/ok ] && echo has_ok; [ ! -e /backups/latest/secret ] && echo no_secret; echo end" -e CUBBY_BACKUP_INTERVAL=2)
+has 'snapshot written' "backup dropped the snapshot for an unreadable file"
+has no_secret "backup copied an unreadable file"
+has has_ok "backup skipped the readable files"
+out=$(oneshot backup "mkdir -p /shared; head -c 3000000 /dev/urandom > /shared/big; chown nobody /shared/big /backups
+    $run_backup; [ ! -e /backups/latest ] && echo no_latest; [ ! -e /backups/.incoming ] && echo no_incoming; echo end" --tmpfs /backups:size=1m -e CUBBY_BACKUP_INTERVAL=2)
+has 'rsync exited with code 11, disk full' "backup did not report a full disk"
+has 'snapshot discarded' "backup kept a failed snapshot"
+has no_latest "backup moved latest to a failed snapshot"
+has no_incoming "backup left a partial snapshot behind"
+out=$(oneshot backup "mkdir -p /shared /backups; $run_backup; echo end")
+has 'is not writable by uid' "backup did not report an unwritable /backups"
+out=$(oneshot backup "su -s /bin/sh nobody -c '/entrypoint.sh check; echo end'" --tmpfs /backups:size=1m)
+has 'MiB free' "backup healthcheck ignored a nearly full disk"
+echo "ok: backup failures"
+
+out=$(docker run --rm cubbytest-web show 2>&1 || true)
+has 'no credentials yet' "web show did not refuse without credentials"
+out=$(oneshot web 'mkdir -p /data; echo extra >> /web/english.txt; njs -n QuickJS -m -p /web /web/creds.js init; test ! -e /data/credentials && echo none; echo end')
+has 'must hold 2048 words, found 2049' "web accepted a word list of the wrong size"
+has none "web wrote credentials from a bad word list"
+echo "ok: web credentials"
+
+for bad in CUBBY_BACKUP_KEEP=0 CUBBY_BACKUP_INTERVAL=1h; do
+    dc run --rm --no-deps -T -e "$bad" backup /entrypoint.sh check 2>&1 | grep -q 'ERROR: CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be' || fail "backup accepted $bad"
+done
 on backup '/entrypoint.sh check' || fail "healthcheck fails on a fresh snapshot"
 dc stop backup
 stale() { dc run --rm --no-deps -T backup /entrypoint.sh check 2>&1 | grep -q 'last snapshot is'; }
