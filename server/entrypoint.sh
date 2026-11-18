@@ -128,7 +128,7 @@ fi
 # The drop-in only applies through the Include in Alpine's stock sshd_config; check the effective values.
 effective=$(/usr/sbin/sshd -T)
 for want in 'allowgroups cubby' 'authorizedkeysfile /run/cubby/authorized_keys/%u' \
-    'authenticationmethods publickey' 'permitrootlogin no' 'passwordauthentication no'; do
+    'authenticationmethods publickey' 'permitrootlogin no' 'passwordauthentication no' 'persourcemaxstartups 10'; do
     if ! printf '%s\n' "$effective" | grep -qx "$want"; then
         echo "ERROR: sshd is not applying '$want'; the drop-in in /etc/ssh/sshd_config.d is being ignored." >&2
         exit 1

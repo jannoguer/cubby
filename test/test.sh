@@ -319,6 +319,13 @@ has '/private/a is not a directory.' "server followed a symlink as a private fol
 has '/private/b is owned by uid 1500, which is reserved or in use' "server took a folder with a reserved uid"
 has '/private/c is owned by uid 1000, which is reserved or in use' "server took a folder owned by the shared user"
 has 'uid_b=1500 uid_c=1000 uid_tmp=0' "server changed the owner of a folder it refused"
+out=$(oneshot server "sed -i '/^PerSourceMaxStartups/d' /etc/ssh/sshd_config.d/10-cubby.conf
+    /entrypoint.sh; echo rc=\$?")
+has "sshd is not applying 'persourcemaxstartups 10'" "server did not check the per-source startup limit"
+has rc=1 "server kept running without a per-source startup limit"
+out=$(oneshot server 'timeout 3 /entrypoint.sh >/dev/null 2>&1; /usr/sbin/sshd -T | grep ^persource')
+has 'persourcemaxstartups 10' "sshd does not limit startups per source"
+has 'persourcenetblocksize 32:64' "sshd counts IPv6 sources per address, not per /64"
 
 # A /config once owned by the sync user may hold links and files it planted before root took it.
 out=$(oneshot server 'mkdir -p /shared/k && ln -s /shared/k /config/ssh_host_keys

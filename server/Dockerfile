@@ -21,6 +21,8 @@ RUN mkdir -p /etc/ssh/sshd_config.d \
     'HostKey /config/ssh_host_keys/ssh_host_ed25519_key' \
     'LoginGraceTime 30' \
     'MaxAuthTries 3' \
+    'PerSourceMaxStartups 10' \
+    'PerSourceNetBlockSize 32:64' \
     'ClientAliveInterval 60' \
     'ClientAliveCountMax 3' \
     > /etc/ssh/sshd_config.d/10-cubby.conf
