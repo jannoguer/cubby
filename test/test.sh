@@ -44,7 +44,7 @@ on() { docker exec "cubbytest-$1" sh -c "$2"; }
 seed() { docker run --rm -i -u 0 -v "cubbytest_$1:/v" cubbytest-backup sh -c "$2"; }
 
 a=$(grep -o "'{{range .}}.*{{end}}'" client/alert.sh)
-b=$(grep -o "'{{range .}}.*{{end}}'" client/windows/alert.ps1)
+b=$(grep -o "'{{range .}}.*{{end}}'" client/alert.ps1)
 [ "$a" = "$b" ] || fail "alert.sh and alert.ps1 use different templates"
 
 # alert.sh puts $HOME/.local/bin first on PATH, so stubs there stand in for the real commands.

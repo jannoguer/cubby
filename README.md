@@ -115,7 +115,7 @@ Alerts: a notification when a session stays disconnected, halted, conflicted or 
 
 ```powershell
 New-Item -ItemType Directory -Force $HOME\.local\bin | Out-Null
-Invoke-WebRequest https://raw.githubusercontent.com/jannoguer/cubby/main/client/windows/alert.ps1 -OutFile $HOME\.local\bin\cubby-alert.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.ps1 -OutFile $HOME\.local\bin\cubby-alert.ps1
 $action = New-ScheduledTaskAction -Execute conhost.exe -Argument "--headless powershell -NoProfile -ExecutionPolicy Bypass -File `"$HOME\.local\bin\cubby-alert.ps1`""
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
@@ -296,7 +296,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT`
 ```text
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    alert.sh, windows/alert.ps1
+client/    alert.sh, alert.ps1
 test/      smoke test of both images and the alert scripts: sh test/test.sh, needs Docker and ssh
 data/      runtime state, ignored by git
   config/            ssh_host_keys/ (back it up) and the sync users' homes, Mutagen's working state
