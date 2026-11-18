@@ -1,6 +1,7 @@
 #!/bin/sh
-# Smoke test: builds both images and checks login, private folders, snapshots, pruning,
-# restores, folder removal and the healthcheck. Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
+# Smoke test: checks client/alert.sh against stubs, then builds both images and checks login,
+# private folders, snapshots, pruning, restores, folder removal and the healthcheck.
+# Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -41,6 +42,54 @@ as() {
 on() { docker exec "cubbytest-$1" sh -c "$2"; }
 # seed <volume> <script>: run a script as root with the volume at /v, before the stack starts.
 seed() { docker run --rm -i -u 0 -v "cubbytest_$1:/v" cubbytest-backup sh -c "$2"; }
+
+a=$(grep -o "'{{range .}}.*{{end}}'" client/alert.sh)
+b=$(grep -o "'{{range .}}.*{{end}}'" client/windows/alert.ps1)
+[ "$a" = "$b" ] || fail "alert.sh and alert.ps1 use different templates"
+
+# alert.sh puts $HOME/.local/bin first on PATH, so stubs there stand in for the real commands.
+h=$tmp/home
+mkdir -p "$h/.local/bin"
+printf '#!/bin/sh\necho "$STUB_UNAME"\n' > "$h/.local/bin/uname"
+printf '#!/bin/sh\nprintf "%%s\\n" "$STUB_OUT"\nexit "$STUB_RC"\n' > "$h/.local/bin/mutagen"
+printf '#!/bin/sh\n' > "$h/.local/bin/sleep"
+for c in busctl osascript; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "${0##*/}" "$@" > "$HOME/notified"\n[ ! -e "$HOME/notify-fails" ]\n' > "$h/.local/bin/$c"
+done
+chmod +x "$h/.local/bin/"*
+# alert <uname> <mutagen exit code> <mutagen output>: run alert.sh; $h/notified holds what it sent.
+alert() {
+    rm -f "$h/notified"
+    HOME=$h XDG_STATE_HOME=$h/state STUB_UNAME=$1 STUB_RC=$2 STUB_OUT=$3 sh client/alert.sh
+}
+# notified <line...>: the last run sent a notification with these lines.
+notified() {
+    for l in "$@"; do
+        grep -qxF -- "$l" "$h/notified" 2> /dev/null || fail "alert did not send: $l"
+    done
+}
+down='Error: unable to connect to daemon: connection refused (is the daemon running?)'
+
+alert Linux 0 'false "watching" 0 0 0 0 0
+true "disconnected" 0 0 0 0 0 '
+[ ! -e "$h/notified" ] || fail "alert on a healthy or paused session"
+alert Linux 0 'false "connecting-beta" 0 0 0 0 0 dial tcp: i/o timeout
+false "watching" 2 1 0 0 3 '
+notified busctl Notify "Can't reach the server (dial tcp: i/o timeout)." 'Conflicts to resolve: 2. Files that could not sync: 4.'
+alert Linux 0 'false "watching" 2 1 0 0 3 '
+notified 'Conflicts to resolve: 2. Files that could not sync: 4.'
+alert Linux 0 'false "watching" 2 1 0 0 3 '
+[ ! -e "$h/notified" ] || fail "alert repeated an unchanged report"
+alert Linux 0 ''
+[ ! -e "$h/state/cubby/alert" ] || fail "alert kept its state after recovery"
+touch "$h/notify-fails"
+if alert Darwin 1 "$down"; then
+    fail "alert succeeded although the notification failed"
+fi
+rm "$h/notify-fails"
+alert Darwin 1 "$down"
+notified osascript "Mutagen isn't running."
+echo "ok: alert"
 
 for k in laptop phone guest; do
     ssh-keygen -q -t ed25519 -N "" -f "$tmp/$k"

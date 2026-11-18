@@ -109,7 +109,9 @@ systemctl --user enable --now mutagen.service
 loginctl enable-linger "$USER"
 ```
 
-Alerts: a notification when a session stays disconnected, halted, conflicted or failing for over a minute. Windows only:
+Alerts: a notification when a session stays disconnected, halted, conflicted or failing for over a minute.
+
+<details open><summary>Windows</summary>
 
 ```powershell
 New-Item -ItemType Directory -Force $HOME\.local\bin | Out-Null
@@ -119,6 +121,53 @@ $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (Ne
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 Register-ScheduledTask cubby-alert -Action $action -Trigger $trigger -Settings $settings -Force
 ```
+
+</details>
+
+<details><summary>Linux</summary>
+
+```bash
+mkdir -p ~/.local/bin ~/.config/systemd/user
+curl -fsSL -o ~/.local/bin/cubby-alert https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.sh && chmod +x ~/.local/bin/cubby-alert
+cat > ~/.config/systemd/user/cubby-alert.service <<EOF
+[Service]
+ExecStart=$HOME/.local/bin/cubby-alert
+EOF
+cat > ~/.config/systemd/user/cubby-alert.timer <<EOF
+[Timer]
+OnCalendar=*:0/5
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl --user enable --now cubby-alert.timer
+```
+
+</details>
+
+<details><summary>macOS (untested)</summary>
+
+```bash
+mkdir -p ~/.local/bin ~/Library/LaunchAgents
+curl -fsSL -o ~/.local/bin/cubby-alert https://raw.githubusercontent.com/jannoguer/cubby/main/client/alert.sh && chmod +x ~/.local/bin/cubby-alert
+cat > ~/Library/LaunchAgents/cubby-alert.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>cubby-alert</string>
+    <key>ProgramArguments</key><array><string>$HOME/.local/bin/cubby-alert</string></array>
+    <key>StartInterval</key><integer>300</integer>
+</dict>
+</plist>
+EOF
+launchctl bootout gui/$(id -u)/cubby-alert 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/cubby-alert.plist
+```
+
+macOS asks once to allow notifications from Script Editor.
+
+</details>
 
 ## 4. Backups
 
@@ -247,8 +296,8 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT`
 ```text
 server/    sshd image; server/entrypoint.sh builds users and authorized_keys at start
 backup/    snapshot image; backup/entrypoint.sh loops and is the healthcheck
-client/    windows/alert.ps1
-test/      smoke test of both images: sh test/test.sh, needs Docker and ssh
+client/    alert.sh, windows/alert.ps1
+test/      smoke test of both images and the alert scripts: sh test/test.sh, needs Docker and ssh
 data/      runtime state, ignored by git
   config/            ssh_host_keys/ (back it up) and the sync users' homes, Mutagen's working state
   clients/           <device>.pub, read at start
