@@ -7,6 +7,7 @@ set -eu
 
 SRC=/shared
 DST=/backups
+INCOMING=$DST/.incoming
 INTERVAL=${CUBBY_BACKUP_INTERVAL:-3600}
 KEEP=${CUBBY_BACKUP_KEEP:-168}
 MIN_FREE_KB=1048576
@@ -44,8 +45,7 @@ fi
 while :; do
     start=$(date +%s)
     ts=$(date -u +%Y-%m-%dT%H%M%SZ)
-    incoming="$DST/.incoming"
-    rm -rf "$incoming"
+    rm -rf "$INCOMING"
     # As uid 1000 rsync cannot chown. Du+rwx: a directory copied without owner access could never be pruned.
     # -H -S: hardlinks and sparse files cost what they cost in the source. go-w,a-s: drop client-set bits.
     # The exclude: Mutagen copies each file in under that name, as /config and /shared are separate mounts.
@@ -63,11 +63,11 @@ while :; do
         report "no changes; snapshot skipped"
     else
         rc=0
-        rsync "$@" "$SRC/" "$incoming/" || rc=$?
+        rsync "$@" "$SRC/" "$INCOMING/" || rc=$?
         case "$rc" in
             # 23: unreadable paths skipped (listed above); 24: files vanished mid-copy.
             0|23|24)
-                mv "$incoming" "$DST/$ts"
+                mv "$INCOMING" "$DST/$ts"
                 # Relative target so the link also resolves on the host.
                 ln -sfn "$ts" "$DST/latest"
                 report "snapshot written"
@@ -76,7 +76,7 @@ while :; do
                 hint=
                 [ "$rc" = 11 ] && hint=", disk full or an I/O error"
                 echo "[$ts] WARNING: rsync exited with code $rc$hint; snapshot discarded" >&2
-                rm -rf "$incoming"
+                rm -rf "$INCOMING"
                 ;;
         esac
     fi
