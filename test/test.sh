@@ -197,6 +197,9 @@ good=a:$pass$(totp 0)
 page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lacks web.txt"
 [ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web download differs"
 [ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web forgot the login"
+as laptop cubby 'touch "/shared/bad$(printf "\377")"'
+[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web listing fails on a name that is not UTF-8"
+page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lost web.txt next to a name that is not UTF-8"
 [ "$(code 10.0.0.2 "$good" '')" = 401 ] || fail "web accepted the login from another IP"
 [ "$(code 10.0.0.1 "b:${good#*:}" '')" = 401 ] || fail "web accepted a spent code under another username"
 [ "$(code 10.0.0.1 "$good" link)" = 403 ] || fail "web served a symlink"

@@ -50,7 +50,13 @@ function render(r) {
         if (e.name.startsWith('.') || !(e.isDirectory() || e.isFile())) {
             continue;
         }
-        const stat = fs.lstatSync(dir + '/' + e.name);
+        let stat;
+        try {
+            stat = fs.lstatSync(dir + '/' + e.name);
+        } catch (err) {
+            // A name that is not valid UTF-8 comes back lossy and cannot be looked up; skip it, not the page.
+            continue;
+        }
         (e.isDirectory() ? dirs : files).push({ name: e.name, size: stat.size, mtime: stat.mtimeMs });
     }
     const byName = (a, b) => a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;

@@ -273,7 +273,7 @@ Without `ssh-keygen`, make an Ed25519 key pair in the browser at [sshkeygen.dev]
 
 ## 8. Web
 
-Read `/shared` from any browser, no key or install: a plain read-only "Index of /" with a `download` link per file (symlinks and dotfiles are not listed), behind a password and a one-time code. Off by default.
+Read `/shared` from any browser, no key or install: a plain read-only "Index of /" with a `download` link per file (symlinks, dotfiles and names that are not valid UTF-8 are not listed), behind a password and a one-time code. Off by default.
 
 Uncomment `COMPOSE_PROFILES=web` in `.env` to include it in every `docker compose` command, then start it and show the credentials:
 
