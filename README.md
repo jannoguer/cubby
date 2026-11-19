@@ -17,7 +17,7 @@ Self-hosted file sync. One Alpine container runs a key-only sshd, every computer
 
 ## 1. Server
 
-Needs Docker with Compose and TCP `2222` (or `CUBBY_PORT`) reachable by the clients. Docker skips ufw.
+Needs Docker with Compose and TCP `2222` (or `CUBBY_PORT`) reachable by the clients.
 
 ```bash
 git clone https://github.com/jannoguer/cubby.git cubby && cd cubby
@@ -82,7 +82,7 @@ mutagen daemon stop             # any mutagen command starts it again
 
 On Linux with the systemd unit, stop the daemon with `systemctl --user stop mutagen.service` instead: the unit restarts a stopped daemon.
 
-Deletions propagate within seconds, the backups are the safety net. Conflicts are never resolved by discarding data: edit the side you want to keep.
+Deletions propagate within seconds; the backups are the safety net. Conflicts are never resolved by discarding data: edit the side you want to keep.
 
 ## 3. Daemon on boot and alerts
 
@@ -172,15 +172,15 @@ macOS asks once to allow notifications from Script Editor.
 
 ## 4. Backups
 
-The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed. Snapshots are hardlinked, so unchanged files cost only a directory entry, `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed. With the defaults, hourly and 168 kept, a deletion stays recoverable for at least a week, longer when nothing changes, a larger `CUBBY_BACKUP_KEEP` is cheap.
+The backup container snapshots `data/shared/` into `data/backups/` at start and every `CUBBY_BACKUP_INTERVAL` in which something changed. Snapshots are hardlinked, so unchanged files cost only a directory entry; `data/backups/latest` points at the newest and the oldest beyond `CUBBY_BACKUP_KEEP` are removed. With the defaults, hourly and 168 kept, a deletion stays recoverable for at least a week, longer when nothing changes. A larger `CUBBY_BACKUP_KEEP` is cheap.
 
 ```bash
-docker compose ps  # backup, backup-private show unhealthy after two missed intervals or under 1 GiB free
+docker compose ps  # backup and backup-private show unhealthy after two missed intervals, a stalled prune or under 1 GiB free
 docker compose logs -f backup
 ls data/backups/
 ```
 
-Restore by unpacking a snapshot into the container as the sync user, the copy syncs to every client. `flock` (util-linux) locks `data/backups` while `tar` reads: the restore makes new snapshots, and their pruning waits until it ends, so even the oldest snapshot stays readable.
+Restore by unpacking a snapshot into the container as the sync user; the copy syncs to every client. `flock` (util-linux) locks `data/backups` while `tar` reads: the restore may make new snapshots, and their pruning waits until it ends, so even the oldest snapshot stays readable while restoring.
 
 > [!CAUTION]
 > Never copy into `data/shared/` as root: a client can plant a symlink there.
@@ -189,7 +189,7 @@ Restore by unpacking a snapshot into the container as the sync user, the copy sy
 sudo flock data/backups tar -C data/backups/2026-09-03T030000Z -cf - some/folder | docker compose exec -T -u 1000:1000 server tar -C /shared -xf -
 ```
 
-While the lock is held, the backup log says `pruning postponed` and the next run catches up. To keep a snapshot for good, rename it to anything but a timestamp: only timestamp names are pruned.
+If a backup run falls within the restore, its log says `pruning postponed` and the next run catches up. To keep a snapshot for good, rename it to anything but a timestamp: only timestamp names are pruned.
 
 Offsite copy: pull from another machine, `rsync -aHS server:/path/cubby/data/backups/ backups/`. `data/private-backups/` is readable only by root.
 
@@ -202,7 +202,7 @@ docker compose restart server  # other clients reconnect on their own
 ```
 
 > [!WARNING]
-> Deleting `<name>.pub` also deletes its [private folder](#6-private-folders) at that restart, its snapshots keep it until they are pruned. To block a key and keep the folder, replace or empty the file's contents instead.
+> Deleting `<name>.pub` also deletes its [private folder](#6-private-folders) at that restart; its snapshots keep it until they are pruned. To block a key and keep the folder, replace or empty the file's contents instead.
 
 ## 6. Private folders
 
@@ -253,14 +253,14 @@ sudo flock data/private-backups tar -C data/private-backups/2026-09-03T030000Z -
 
 ## 7. SFTP
 
-Copy single files or folders without a sync session. A push overwrites the server's file and Mutagen spreads it to every device, overwritten or deleted files come back only from [backups](#4-backups). The server has no rsync, only OpenSSH.
+Copy single files or folders without a sync session. A push overwrites the server's file and Mutagen spreads it to every device; overwritten or deleted files come back only from [backups](#4-backups). The server has no rsync, only OpenSSH.
 
 On a computer, use the key and `cubby` alias from [Client](#2-client):
 
 ```bash
 scp cubby:/shared/some/file .              # pull
 scp -r folder cubby:/shared/some/          # push
-sftp cubby                                 # interactive, cd /shared
+sftp cubby                                 # interactive; cd /shared
 scp file laptop@cubby:/private/laptop/     # private folder, logged in as its name
 ```
 
@@ -283,7 +283,7 @@ The first start writes the credentials to `data/web/credentials`, never to the l
 
 Log in with the browser's sign-in box: any username (even empty), the four words and the 6-digit code with nothing between, `orbit-velvet-cannon-shrug492817`. Each code works once and a login is remembered for 15 minutes per IP. Three wrong attempts block that IP for 1 hour, and requests are capped at 10 per second. A restart clears both.
 
-Nginx serves plain HTTP on `127.0.0.1:8080` (`CUBBY_WEB_BIND_ADDR`, `CUBBY_WEB_PORT`), put one HTTPS proxy or tunnel in front. It must pass `Authorization` and set `X-Forwarded-For`, and Cubby trusts only the last entry, so a second proxy in a row is not supported. Without the header all visitors share one IP, and one lockout.
+Nginx serves plain HTTP on `127.0.0.1:8080` (`CUBBY_WEB_BIND_ADDR`, `CUBBY_WEB_PORT`); put one HTTPS proxy or tunnel in front. It must pass `Authorization` and set `X-Forwarded-For`, and Cubby trusts only the last entry, so a second proxy in a row is not supported. Without the header all visitors share one IP, and one lockout.
 
 > [!CAUTION]
 > Never publish the port beyond the proxy: with `CUBBY_WEB_BIND_ADDR=0.0.0.0` a client could forge `X-Forwarded-For` and get fresh attempts for every guess.
@@ -312,7 +312,7 @@ Then on every client: `ssh-keygen -R '[SERVER_IP]:2222'`, with your `CUBBY_PORT`
 ## 10. Layout
 
 ```text
-server/    sshd image, its entrypoint creates the users and keys from data/clients/ at each start
+server/    sshd image; its entrypoint creates the users and keys from data/clients/ at each start
 backup/    snapshot image, also the healthcheck (section 4)
 web/       opt-in read-only browser view: nginx with njs, behind password and one-time code (section 8)
 client/    alert.sh (Linux, macOS) and alert.ps1 (Windows): notify when a sync stops (section 3)
@@ -322,7 +322,7 @@ data/      runtime state, git-ignored
   clients/           <name>.pub, one per client or shared folder (section 5)
   shared/            the synced tree, owned by uid 1000
   private/           <name>/ folders, one uid each from 2000 (section 6)
-  backups/           snapshots of shared/, latest points to the newest
+  backups/           snapshots of shared/; latest points to the newest
   private-backups/   snapshots of private/
-  web/               web view credentials, plain text (0600), only with the web profile
+  web/               web view credentials, plain text (0600); only with the web profile
 ```
