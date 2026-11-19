@@ -2,7 +2,8 @@
 # Hardlinked rsync snapshots of /shared into /backups every CUBBY_BACKUP_INTERVAL seconds,
 # skipped when nothing changed; the newest CUBBY_BACKUP_KEEP are kept, /backups/latest points at the newest.
 # Pruning waits while a restore holds a flock on /backups.
-# "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals, under 1 GiB is free
+# Under MIN_FREE_PCT free a run skips its snapshot, so a large change cannot fill the disk the synced data shares.
+# "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals, under MIN_FREE_PCT is free
 # or pruning is more than 3 snapshots behind.
 set -eu
 
@@ -11,7 +12,7 @@ DST=/backups
 INCOMING=$DST/.incoming
 INTERVAL=${CUBBY_BACKUP_INTERVAL:-3600}
 KEEP=${CUBBY_BACKUP_KEEP:-168}
-MIN_FREE_KB=1048576
+MIN_FREE_PCT=10
 
 die() {
     echo "ERROR: $1" >&2
@@ -20,6 +21,10 @@ die() {
 
 free_kb() {
     df -Pk "$DST" | awk 'NR == 2 { print $4 }'
+}
+
+min_free_kb() {
+    df -Pk "$DST" | awk -v pct="$MIN_FREE_PCT" 'NR == 2 { print int($2 * pct / 100) }'
 }
 
 report() {
@@ -42,7 +47,7 @@ esac
 
 if [ "${1-}" = check ]; then
     kb=$(free_kb)
-    [ "$kb" -ge "$MIN_FREE_KB" ] || die "only $((kb / 1024)) MiB free on $DST"
+    [ "$kb" -ge "$(min_free_kb)" ] || die "only $((kb / 1024)) MiB free on $DST, under $MIN_FREE_PCT%"
     [ -d "$DST/latest" ] || die "no snapshot yet"
     # The link's own mtime: rsync -a gives the snapshot directory the source tree's.
     age=$(( $(date +%s) - $(stat -c %Y "$DST/latest") ))
@@ -74,6 +79,9 @@ while :; do
     elif [ "$unchanged" = 1 ]; then
         touch -h "$DST/latest" # for the healthcheck
         report "no changes; snapshot skipped"
+    elif [ "$(free_kb)" -lt "$(min_free_kb)" ]; then
+        # latest is left alone, so the healthcheck also reports the snapshot going stale.
+        echo "[$ts] WARNING: only $(( $(free_kb) / 1024 )) MiB free, under $MIN_FREE_PCT%; snapshot skipped" >&2
     else
         rc=0
         rsync "$@" "$SRC/" "$INCOMING/" || rc=$?

@@ -402,10 +402,17 @@ has 'rsync exited with code 11, disk full' "backup did not report a full disk"
 has 'snapshot discarded' "backup kept a failed snapshot"
 has no_latest "backup moved latest to a failed snapshot"
 has no_incoming "backup left a partial snapshot behind"
+# fill: 960 KiB of a 1 MiB /backups, under the 10% that must stay free.
+fill='head -c 983040 /dev/zero > /backups/fill'
+out=$(oneshot backup "mkdir -p /shared; echo ok > /shared/ok; chown nobody /shared/ok /backups; $fill
+    $run_backup; [ ! -e /backups/latest ] && echo no_latest; [ ! -e /backups/.incoming ] && echo no_incoming; echo end" --tmpfs /backups:size=1m -e CUBBY_BACKUP_INTERVAL=2)
+has 'under 10%; snapshot skipped' "backup snapshotted with under 10% free"
+has no_latest "backup moved latest while short of space"
+has no_incoming "backup started a snapshot while short of space"
 out=$(oneshot backup "mkdir -p /shared /backups; $run_backup; echo end")
 has 'is not writable by uid' "backup did not report an unwritable /backups"
-out=$(oneshot backup "su -s /bin/sh nobody -c '/entrypoint.sh check; echo end'" --tmpfs /backups:size=1m)
-has 'MiB free' "backup healthcheck ignored a nearly full disk"
+out=$(oneshot backup "$fill; su -s /bin/sh nobody -c '/entrypoint.sh check; echo end'" --tmpfs /backups:size=1m)
+has 'MiB free on /backups, under 10%' "backup healthcheck ignored a nearly full disk"
 echo "ok: backup failures"
 
 out=$(docker run --rm cubbytest-web show 2>&1 || true)
