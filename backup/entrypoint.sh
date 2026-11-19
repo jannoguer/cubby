@@ -2,7 +2,8 @@
 # Hardlinked rsync snapshots of /shared into /backups every CUBBY_BACKUP_INTERVAL seconds,
 # skipped when nothing changed; the newest CUBBY_BACKUP_KEEP are kept, /backups/latest points at the newest.
 # Pruning waits while a restore holds a flock on /backups.
-# "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals or under 1 GiB is free.
+# "entrypoint.sh check" is the healthcheck: fails when latest is older than two intervals, under 1 GiB is free
+# or pruning is more than 3 snapshots behind.
 set -eu
 
 SRC=/shared
@@ -25,6 +26,15 @@ report() {
     echo "[$ts] $1, $(( $(free_kb) / 1048576 )) GiB free"
 }
 
+# Only timestamp names count: a renamed snapshot is kept for good.
+snapshots() {
+    n=0
+    for d in "$DST"/????-??-??T??????Z; do
+        [ -d "$d" ] && n=$((n + 1))
+    done
+    echo "$n"
+}
+
 case "$INTERVAL$KEEP" in
     *[!0-9]*|'') die "CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be whole numbers, got '$INTERVAL' and '$KEEP'." ;;
 esac
@@ -37,6 +47,9 @@ if [ "${1-}" = check ]; then
     # The link's own mtime: rsync -a gives the snapshot directory the source tree's.
     age=$(( $(date +%s) - $(stat -c %Y "$DST/latest") ))
     [ "$age" -le $((INTERVAL * 2)) ] || die "last snapshot is ${age}s old"
+    # Pruning only falls this far behind while a restore holds the lock for several runs.
+    n=$(snapshots)
+    [ "$n" -le $((KEEP + 3)) ] || die "$n snapshots, over CUBBY_BACKUP_KEEP=$KEEP; is a restore stuck holding flock on $DST?"
     exit 0
 fi
 
@@ -85,10 +98,7 @@ while :; do
     exec 9< "$DST"
     if flock -n 9; then
         # Lexical glob order is chronological for these names.
-        n=0
-        for d in "$DST"/????-??-??T??????Z; do
-            [ -d "$d" ] && n=$((n + 1))
-        done
+        n=$(snapshots)
         for d in "$DST"/????-??-??T??????Z; do
             [ "$n" -gt "$KEEP" ] || break
             [ -d "$d" ] || continue

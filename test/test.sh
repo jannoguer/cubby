@@ -263,23 +263,29 @@ echo "ok: prune and pin"
 
 # held <service> <user> <file>: while a restore holds the lock on /backups, new snapshots prune nothing;
 # once it is released, pruning catches up and the loop leaves the lock free while it sleeps.
+# The healthcheck tolerates 3 postponed snapshots over CUBBY_BACKUP_KEEP and fails past that.
 held() {
     svc=$1 user=$2 file=$3
-    docker exec -d "cubbytest-$svc" flock /backups sleep 31
+    docker exec -d "cubbytest-$svc" flock /backups sleep 61
     retry 10 on "$svc" 'exec 9< /backups; ! flock -n 9' || fail "$svc: the restore lock was not taken"
     first=$(on "$svc" 'ls -d /backups/2*Z | head -1')
-    for i in 1 2; do
+    for i in 1 2 3 4; do
         prev=$(on "$svc" 'readlink /backups/latest')
         as laptop "$user" "echo $i > $file"
         retry 20 on "$svc" "[ \"\$(readlink /backups/latest)\" != $prev ]" || fail "$svc: no snapshot while the lock was held"
+        if [ "$i" = 2 ]; then
+            on "$svc" '/entrypoint.sh check' || fail "$svc: healthcheck fails on a short postponement"
+        fi
     done
     on "$svc" "test -d $first" || fail "$svc: a snapshot was pruned while a restore held the lock"
     on "$svc" '[ "$(ls -d /backups/2*Z | wc -l)" -gt 2 ]' || fail "$svc: snapshots were pruned while a restore held the lock"
     dc logs --no-log-prefix "$svc" 2>&1 | grep -qF 'pruning postponed' || fail "$svc: log lacks the postponed pruning"
-    docker exec "cubbytest-$svc" pkill -f 'sleep 31'
+    on "$svc" '/entrypoint.sh check' 2>&1 | grep -qF 'stuck holding flock' || fail "$svc: healthcheck passes with pruning stuck behind a lock"
+    docker exec "cubbytest-$svc" pkill -f 'sleep 61'
     retry 20 on "$svc" '[ "$(ls -d /backups/2*Z | wc -l)" -eq 2 ]' || fail "$svc: pruning did not resume after the restore"
     on "$svc" "test ! -e $first" || fail "$svc: the oldest snapshot outlived the catch-up"
     retry 5 on "$svc" 'flock -n /backups true' || fail "$svc: the backup loop keeps the lock between runs"
+    on "$svc" '/entrypoint.sh check' || fail "$svc: healthcheck still fails after pruning caught up"
     [ "$(docker inspect -f '{{.RestartCount}}' "cubbytest-$svc")" = 0 ] || fail "$svc: the backup loop restarted"
 }
 held backup cubby /shared/e.txt
