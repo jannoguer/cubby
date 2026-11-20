@@ -85,7 +85,7 @@ services:
       - ./data/private:/shared:ro
       - ./data/private-backups:/backups
 
-  # Opt-in read-only browser view of /shared behind password and TOTP; see README section 8.
+  # Opt-in read-only browser view of /shared behind password and TOTP; see README, Web.
   web:
     profiles: [web]
     build: ./web

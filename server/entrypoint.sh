@@ -29,7 +29,7 @@ chmod 600 /run/cubby/shadow
 install -d -m 755 -o root -g root /config
 # Before that fix the sync user could plant links here, which root would follow below.
 for p in "$KEYDIR" "$KEY"; do
-    [ ! -L "$p" ] || die "$p is a symlink; the host key may have been replaced. Rotate it (README section 9)."
+    [ ! -L "$p" ] || die "$p is a symlink; the host key may have been replaced. Rotate it (README, Maintenance)."
 done
 for p in /config/home /config/homes; do
     if [ -L "$p" ]; then
@@ -40,7 +40,7 @@ done
 install -d -m 700 -o root -g root "$KEYDIR"
 [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N "" -f "$KEY"
 # Generated here as root, always; any other owner means the key was replaced.
-[ "$(stat -c %u "$KEY")" = 0 ] || die "$KEY is not owned by root; the host key may have been replaced. Rotate it (README section 9)."
+[ "$(stat -c %u "$KEY")" = 0 ] || die "$KEY is not owned by root; the host key may have been replaced. Rotate it (README, Maintenance)."
 chmod 600 "$KEY"
 # From the key sshd serves; the .pub sidecar is not kept in step with it.
 echo "Host key fingerprint: $(ssh-keygen -y -f "$KEY" | ssh-keygen -lf -)"

@@ -102,7 +102,7 @@ while :; do
         esac
     fi
 
-    # A restore holds a lock on $DST while it reads a snapshot (README section 4); prune on a later run.
+    # A restore holds a lock on $DST while it reads a snapshot (README, Backups); prune on a later run.
     exec 9< "$DST"
     if flock -n 9; then
         # Lexical glob order is chronological for these names.
