@@ -20,7 +20,7 @@ Needs Docker with Compose and TCP `2222` (or `CUBBY_PORT`) reachable by the clie
 
 ```bash
 git clone https://github.com/jannoguer/cubby.git cubby && cd cubby
-mkdir -p data/config data/shared data/clients data/backups data/private-backups data/web
+mkdir -p data/config data/shared data/clients data/private data/backups data/private-backups data/web
 sudo chown 1000:1000 data/backups data/web
 sudo chown 0:0 data/private-backups
 docker compose up --build -d
@@ -117,7 +117,7 @@ Deletions propagate within seconds; the backups are the safety net. Conflicts ar
 
 ## Alerts
 
-Notify when a session is wrong:
+Notify when Mutagen isn't running, or a session stays disconnected, halted, conflicted or unable to sync some files for over a minute:
 
 <details open><summary>Windows</summary>
 
