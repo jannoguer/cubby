@@ -1,31 +1,18 @@
 #!/bin/sh
-# Starts nginx over /shared; first start generates /data/credentials.
-# "entrypoint.sh show" prints the password, the TOTP seed and the otpauth link.
+# Starts nginx over /shared behind CUBBY_WEB_PASSWORD; "entrypoint.sh check" is the healthcheck.
 set -eu
 
-CREDS=/data/credentials
-
-die() {
-    echo "ERROR: $1" >&2
-    exit 1
-}
-
-# The njs CLI has no ES module support in its default engine.
-creds() {
-    njs -n QuickJS -m -p /web /web/creds.js "$1"
-}
-
-if [ "${1-}" = show ]; then
-    [ -f "$CREDS" ] || die "no credentials yet; start the container first."
-    creds show
-    exit 0
+if [ "${1-}" = check ]; then
+    # Without a password the page itself answers; with one, the challenge does.
+    [ -z "$CUBBY_WEB_PASSWORD" ] && want=200 || want=401
+    wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q " $want "
+    exit
 fi
 
-[ -w /data ] || die "/data is not writable by uid $(id -u); chown the host directory mounted there to $(id -u):$(id -g)."
-
-if [ ! -f "$CREDS" ]; then
-    creds init
-    echo "Credentials created; show them with: docker compose exec web /entrypoint.sh show"
+# Unset refuses to start; set but empty is the explicit choice of no login.
+if [ -z "${CUBBY_WEB_PASSWORD+set}" ]; then
+    echo "ERROR: set CUBBY_WEB_PASSWORD in .env; an empty value means no login." >&2
+    exit 1
 fi
 
 exec nginx -e stderr -c /web/nginx.conf -g 'daemon off;'

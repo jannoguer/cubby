@@ -1,6 +1,6 @@
 FROM nginx:alpine
 
-COPY nginx.conf auth.js totp.js creds.js listing.js english.txt /web/
+COPY nginx.conf auth.js listing.js /web/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh
 

@@ -85,17 +85,19 @@ services:
       - ./data/private:/shared:ro
       - ./data/private-backups:/backups
 
-  # Opt-in read-only browser view of /shared behind password and TOTP; see README, Web.
+  # Opt-in read-only browser view of /shared behind CUBBY_WEB_PASSWORD; see README, Web.
   web:
     profiles: [web]
     build: ./web
     container_name: cubby-web
     init: true
+    # Passed through without ${}: unset stays unset, so the entrypoint can refuse it, and an empty value stays empty.
+    environment:
+      - CUBBY_WEB_PASSWORD
     ports:
       - "${CUBBY_WEB_BIND_ADDR:-127.0.0.1}:${CUBBY_WEB_PORT:-8080}:8080"
     volumes:
       - ./data/shared:/shared:ro
-      - ./data/web:/data
     read_only: true
     tmpfs:
       - /tmp:size=16m
@@ -107,7 +109,7 @@ services:
     mem_limit: 128m
     logging: *logging
     healthcheck:
-      test: ["CMD-SHELL", "wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '"]
+      test: ["CMD", "/entrypoint.sh", "check"]
       interval: 30s
       timeout: 5s
       retries: 3

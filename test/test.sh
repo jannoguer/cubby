@@ -9,7 +9,8 @@ cd "$(dirname "$0")/.."
 # Git Bash would rewrite the container paths passed to docker.
 export MSYS_NO_PATHCONV=1
 export CUBBY_BIND_ADDR=127.0.0.1 CUBBY_PORT=22922 CUBBY_BACKUP_INTERVAL=2 CUBBY_BACKUP_KEEP=2
-export COMPOSE_PROFILES=web CUBBY_WEB_PORT=18080
+# The shell wins over a CUBBY_WEB_PASSWORD in the repo's own .env. The colon checks the split at the first one.
+export COMPOSE_PROFILES=web CUBBY_WEB_PORT=18080 CUBBY_WEB_PASSWORD='Pass:w0rd'
 
 tmp=$(mktemp -d)
 dc() { docker compose -p cubbytest -f docker-compose.yml -f test/compose.yml "$@"; }
@@ -119,7 +120,6 @@ done
 echo garbage | seed clients 'cat > /v/bad.pub'
 seed clients 'cat > /v/Upper.pub' < "$tmp/guest.pub"
 seed backups 'chown 1000:1000 /v' < /dev/null
-seed web 'chown 1000:1000 /v' < /dev/null
 dc up -d
 
 retry 30 as laptop cubby true || fail "no login as cubby"
@@ -165,46 +165,23 @@ method() {
 headers() {
     on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(basic "$2")\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
 }
-webup="wget -S -q -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q ' 401 '"
-# totp <seconds from now>: the 6-digit code for that time.
-totp() { on web "njs -n QuickJS -m -p /web -c \"import {totp} from './totp.js'; console.log(totp('$webseed', Math.floor(Date.now() / 1000) + $1, 6))\""; }
+webup='/entrypoint.sh check'
 
 retry 30 on web "$webup" || fail "web does not answer"
-[ "$(on web 'stat -c %a /data/credentials')" = 600 ] || fail "web credentials are not mode 0600"
-shown=$(on web '/entrypoint.sh show')
-pass=$(printf '%s\n' "$shown" | sed -n 's/^password: //p')
-webseed=$(printf '%s\n' "$shown" | sed -n 's/^seed: *//p' | tr -d ' ')
-printf '%s\n' "$pass" | grep -qE '^[a-z]+(-[a-z]+){3}$' || fail "web password is not four words"
-for w in $(printf '%s\n' "$pass" | tr - ' '); do
-    on web "grep -qx $w /web/english.txt" || fail "web password word $w is not in the list"
-done
-printf '%s\n' "$webseed" | grep -qE '^[A-Z2-7]{32}$' || fail "web seed is not 32 base32 characters"
-printf '%s\n' "$shown" | grep -qxF "otpauth://totp/Cubby?secret=$webseed&issuer=Cubby" || fail "web show lacks the otpauth link"
-weblogs=$(dc logs --no-log-prefix web 2>&1)
-printf '%s\n' "$weblogs" | grep -qF -e "$pass" -e "$webseed" && fail "web log holds the password or the seed"
-
-vectors=$(on web "njs -n QuickJS -m -p /web -c \"import {base32, totp} from './totp.js'; const s = base32(Buffer.from('12345678901234567890')); console.log(s); for (const t of [59, 1111111109, 1111111111, 1234567890, 2000000000]) console.log(t + ' ' + totp(s, t, 8))\"")
-# The seed line is RFC 4648 base32, as authenticator apps decode it; a round trip alone would hide a shared bug.
-[ "$vectors" = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
-59 94287082
-1111111109 07081804
-1111111111 14050471
-1234567890 89005924
-2000000000 69279037' ] || fail "base32 or RFC 6238 vectors differ: $vectors"
-
 on web "printf 'GET / HTTP/1.0\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | grep -q '^WWW-Authenticate: Basic' || fail "web 401 lacks WWW-Authenticate"
 as laptop cubby 'echo web-ok > /shared/web.txt; ln -s /etc/passwd /shared/link; ln -s / /shared/rootlink
     touch /shared/.hidden; mkdir /shared/sub; echo amp > "/shared/sub/a&b.txt"'
-good=a:$pass$(totp 0)
-[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web refused the password and current code"
+good=a:$CUBBY_WEB_PASSWORD
+[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web refused the password"
+[ "$(code 10.0.0.1 ":$CUBBY_WEB_PASSWORD" '')" = 200 ] || fail "web refused an empty username"
+[ "$(code 10.0.0.1 "a:pass:w0rd" '')" = 401 ] || fail "web accepted the password in another case"
+[ "$(code 10.0.0.1 "a:Pass" '')" = 401 ] || fail "web accepted part of the password"
+[ "$(code 10.0.0.1 "a:" '')" = 401 ] || fail "web accepted an empty password"
 page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lacks web.txt"
 [ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web download differs"
-[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web forgot the login"
 as laptop cubby 'touch "/shared/bad$(printf "\377")"'
 [ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web listing fails on a name that is not UTF-8"
 page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lost web.txt next to a name that is not UTF-8"
-[ "$(code 10.0.0.2 "$good" '')" = 401 ] || fail "web accepted the login from another IP"
-[ "$(code 10.0.0.1 "b:${good#*:}" '')" = 401 ] || fail "web accepted a spent code under another username"
 [ "$(code 10.0.0.1 "$good" link)" = 403 ] || fail "web served a symlink"
 [ "$(code 10.0.0.1 "$good" rootlink/)" = 404 ] || fail "web listed a symlinked directory"
 page 10.0.0.1 "$good" '' | grep -qE '>(link|rootlink/|\.hidden)<' && fail "web listing shows a symlink or a dotfile"
@@ -219,19 +196,17 @@ for verb in PUT DELETE; do
     case $(method $verb 10.0.0.1 "$good") in *' 403 '*) ;; *) fail "web did not refuse $verb" ;; esac
 done
 [ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web file changed or vanished"
+dc logs --no-log-prefix web 2>&1 | grep -qF "$CUBBY_WEB_PASSWORD" && fail "web log holds the password"
 
-[ "$(code 10.0.0.3 "c:${pass}000000" '')" = 401 ] || fail "web first failure is not 401"
-[ "$(code 10.0.0.3 "c:${pass}000001" '')" = 401 ] || fail "web second failure is not 401"
-[ "$(code 10.0.0.3 "c:wrong-wrong-wrong-wrong$(totp 30)" '')" = 429 ] || fail "web third failure is not 429"
-[ "$(code 10.0.0.3 "c:$pass$(totp 30)" '')" = 429 ] || fail "web let a blocked IP in"
-[ "$(code 10.0.0.4 "c:$pass$(totp 30)" '')" = 200 ] || fail "web blocked another IP"
-[ "$(code 10.0.0.5 "d:$pass$(totp -90)" '')" = 401 ] || fail "web accepted a code from three steps ago"
+hc=$(docker inspect --format '{{range slice .Config.Healthcheck.Test 1}}{{.}} {{end}}' cubbytest-web)
+CUBBY_WEB_PASSWORD= dc up -d web
+retry 30 on web "$webup" || fail "web does not answer without a password"
+[ "$(on web 'wget -q -O - http://127.0.0.1:8080/web.txt')" = web-ok ] || fail "web asked for a login with an empty password"
+on web "$hc" || fail "web healthcheck fails without a password"
 as laptop cubby 'rm -r /shared/web.txt /shared/link /shared/rootlink /shared/.hidden /shared/sub'
 
-dc restart web
+dc up -d web
 retry 30 on web "$webup" || fail "web does not answer after a restart"
-[ "$(on web '/entrypoint.sh show')" = "$shown" ] || fail "web credentials changed on restart"
-hc=$(docker inspect --format '{{index .Config.Healthcheck.Test 1}}' cubbytest-web)
 on web "$hc" || fail "web healthcheck fails"
 if COMPOSE_PROFILES= docker compose -f docker-compose.yml config --services | grep -qx web; then
     fail "web is part of the default stack"
@@ -415,12 +390,10 @@ out=$(oneshot backup "$fill; su -s /bin/sh nobody -c '/entrypoint.sh check; echo
 has 'MiB free on /backups, under 10%' "backup healthcheck ignored a nearly full disk"
 echo "ok: backup failures"
 
-out=$(docker run --rm cubbytest-web show 2>&1 || true)
-has 'no credentials yet' "web show did not refuse without credentials"
-out=$(oneshot web 'mkdir -p /data; echo extra >> /web/english.txt; njs -n QuickJS -m -p /web /web/creds.js init; test ! -e /data/credentials && echo none; echo end')
-has 'must hold 2048 words, found 2049' "web accepted a word list of the wrong size"
-has none "web wrote credentials from a bad word list"
-echo "ok: web credentials"
+out=$(docker run --rm cubbytest-web 2>&1 || echo "rc=$?")
+has 'set CUBBY_WEB_PASSWORD in .env' "web did not explain a missing password"
+has rc=1 "web started without CUBBY_WEB_PASSWORD"
+echo "ok: web password guard"
 
 for bad in CUBBY_BACKUP_KEEP=0 CUBBY_BACKUP_INTERVAL=1h; do
     dc run --rm --no-deps -T -e "$bad" backup /entrypoint.sh check 2>&1 | grep -q 'ERROR: CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be' || fail "backup accepted $bad"

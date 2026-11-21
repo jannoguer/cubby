@@ -20,8 +20,8 @@ Needs Docker with Compose and TCP `2222` (or `CUBBY_PORT`) reachable by the clie
 
 ```bash
 git clone https://github.com/jannoguer/cubby.git cubby && cd cubby
-mkdir -p data/config data/shared data/clients data/private data/backups data/private-backups data/web
-sudo chown 1000:1000 data/backups data/web
+mkdir -p data/config data/shared data/clients data/private data/backups data/private-backups
+sudo chown 1000:1000 data/backups
 sudo chown 0:0 data/private-backups
 docker compose up --build -d
 docker compose logs server | grep 'Host key fingerprint'
@@ -313,20 +313,8 @@ Without `ssh-keygen`, make an Ed25519 key pair in the browser at [sshkeygen.dev]
 
 ## Web
 
-Read `/shared` from any browser, no key or install: a plain read-only "Index of /" with a `download` link per file (symlinks, dotfiles and names that are not valid UTF-8 are not listed), behind a password and a one-time code. Off by default.
+Read `/shared` from any browser, no key or install: a plain read-only "Index of /" with a `download` link per file (symlinks, dotfiles and names that are not valid UTF-8 are not listed), behind a password. Off by default.
 
-Uncomment `COMPOSE_PROFILES=web` in `.env` to include it in every `docker compose` command, then start it and show the credentials:
+Uncomment `COMPOSE_PROFILES=web` and `CUBBY_WEB_PASSWORD` in `.env`, then `docker compose up --build -d`. Log in with the browser's sign-in box: any username, that password. An empty `CUBBY_WEB_PASSWORD=` means no login; left unset, the web container refuses to start. Requests are capped at 10 per second per IP.
 
-```bash
-docker compose up --build -d
-docker compose exec web /entrypoint.sh show  # password, seed, otpauth link
-```
-
-The first start writes the credentials to `data/web/credentials`, never to the log. Add the seed to an authenticator app. Rotate: delete that file, `docker compose restart web`, run `show` again.
-
-Log in with the browser's sign-in box: any username (even empty), the four words and the 6-digit code with nothing between, `orbit-velvet-cannon-shrug492817`. Each code works once and a login is remembered for 15 minutes per IP. Three wrong attempts block that IP for 1 hour, and requests are capped at 10 per second. A restart clears both.
-
-Nginx serves plain HTTP on `127.0.0.1:8080` (`CUBBY_WEB_BIND_ADDR`, `CUBBY_WEB_PORT`); put one HTTPS proxy or tunnel in front. It must pass `Authorization` and set `X-Forwarded-For`, and Cubby trusts only the last entry, so a second proxy in a row is not supported. Without the header all visitors share one IP, and one lockout.
-
-> [!CAUTION]
-> Never publish the port beyond the proxy: with `CUBBY_WEB_BIND_ADDR=0.0.0.0` a client could forge `X-Forwarded-For` and get fresh attempts for every guess.
+Nginx serves plain HTTP on `127.0.0.1:8080` (`CUBBY_WEB_BIND_ADDR`, `CUBBY_WEB_PORT`); put one HTTPS proxy or tunnel in front. It must pass `Authorization` and set `X-Forwarded-For`, and Cubby trusts only the last entry, so a second proxy in a row is not supported. Without the header all visitors share one IP, and one rate cap.
