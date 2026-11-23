@@ -86,9 +86,7 @@ alert Linux 0 'false "watching" 2 1 0 0 3 '
 alert Linux 0 ''
 [ ! -e "$h/state/cubby/alert" ] || fail "alert kept its state after recovery"
 touch "$h/notify-fails"
-if alert Darwin 1 "$down"; then
-    fail "alert succeeded although the notification failed"
-fi
+alert Darwin 1 "$down" && fail "alert succeeded although the notification failed"
 rm "$h/notify-fails"
 alert Darwin 1 "$down"
 notified osascript "Mutagen isn't running."
@@ -132,18 +130,10 @@ done
 [ "$(as laptop cubby id -u)" = 1000 ] || fail "cubby is not uid 1000"
 as laptop laptop 'echo secret > /private/laptop/n.txt' || fail "laptop cannot write its private folder"
 [ "$(as laptop laptop stat -c %u /private/laptop)" = 2000 ] || fail "/private/laptop is not uid 2000"
-if as phone laptop true 2> /dev/null; then
-    fail "the phone key logged in as laptop"
-fi
-if as laptop root true 2> /dev/null; then
-    fail "a client key logged in as root"
-fi
-if as laptop Upper true 2> /dev/null; then
-    fail "a key logged in as a name that is not a user"
-fi
-if as laptop cubby 'cat /private/laptop/n.txt' 2> /dev/null; then
-    fail "the shared user read a private folder"
-fi
+as phone laptop true 2> /dev/null && fail "the phone key logged in as laptop"
+as laptop root true 2> /dev/null && fail "a client key logged in as root"
+as laptop Upper true 2> /dev/null && fail "a key logged in as a name that is not a user"
+as laptop cubby 'cat /private/laptop/n.txt' 2> /dev/null && fail "the shared user read a private folder"
 echo "ok: login and private folders"
 
 # Web: requests run inside cubbytest-web with busybox wget; X-Forwarded-For stands in for the client IP.
@@ -166,9 +156,10 @@ method() {
 headers() {
     on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(basic "$2")\\r\\n${4-}\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
 }
-webup='/entrypoint.sh check'
+# The web healthcheck as compose runs it.
+hc=$(docker inspect --format '{{range slice .Config.Healthcheck.Test 1}}{{.}} {{end}}' cubbytest-web)
 
-retry 30 on web "$webup" || fail "web does not answer"
+retry 30 on web "$hc" || fail "web does not answer"
 on web "printf 'GET / HTTP/1.0\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | grep -q '^WWW-Authenticate: Basic' || fail "web 401 lacks WWW-Authenticate"
 as laptop cubby 'echo web-ok > /shared/web.txt; touch /shared/notes.md; ln -s /etc/passwd /shared/link; ln -s / /shared/rootlink
     touch /shared/.hidden; mkdir /shared/sub; echo amp > "/shared/sub/a&b.txt"'
@@ -219,19 +210,14 @@ done
 [ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web file changed or vanished"
 dc logs --no-log-prefix web 2>&1 | grep -qF "$CUBBY_WEB_PASSWORD" && fail "web log holds the password"
 
-hc=$(docker inspect --format '{{range slice .Config.Healthcheck.Test 1}}{{.}} {{end}}' cubbytest-web)
 CUBBY_WEB_PASSWORD= dc up -d web
-retry 30 on web "$webup" || fail "web does not answer without a password"
+retry 30 on web "$hc" || fail "web healthcheck fails without a password"
 [ "$(on web 'wget -q -O - http://127.0.0.1:8080/web.txt')" = web-ok ] || fail "web asked for a login with an empty password"
-on web "$hc" || fail "web healthcheck fails without a password"
 as laptop cubby 'rm -r /shared/web.txt /shared/notes.md /shared/link /shared/rootlink /shared/.hidden /shared/sub'
 
 dc up -d web
-retry 30 on web "$webup" || fail "web does not answer after a restart"
-on web "$hc" || fail "web healthcheck fails"
-if COMPOSE_PROFILES= docker compose -f docker-compose.yml config --services | grep -qx web; then
-    fail "web is part of the default stack"
-fi
+retry 30 on web "$hc" || fail "web healthcheck fails after a restart"
+COMPOSE_PROFILES= docker compose -f docker-compose.yml config --services | grep -qx web && fail "web is part of the default stack"
 echo "ok: web"
 
 as laptop cubby 'echo one > /shared/a.txt'
