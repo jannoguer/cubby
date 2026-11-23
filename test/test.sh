@@ -177,6 +177,7 @@ good=a:$CUBBY_WEB_PASSWORD
 [ "$(code 10.0.0.1 "a:" '')" = 401 ] || fail "web accepted an empty password"
 page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lacks web.txt"
 [ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web download differs"
+[ "$(code 10.0.0.1 "a:Pass" web.txt)" = 401 ] || fail "web served a file with a wrong password"
 as laptop cubby 'touch "/shared/bad$(printf "\377")"'
 [ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web listing fails on a name that is not UTF-8"
 page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lost web.txt next to a name that is not UTF-8"
