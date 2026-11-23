@@ -190,6 +190,13 @@ page 10.0.0.1 "$good" sub/ | grep -qF '<a href="a%26b.txt">a&amp;b.txt</a>' || f
 as laptop cubby 'mkdir /shared/sub/zdir; touch /shared/sub/B.txt /shared/sub/a.txt /shared/sub/a.txt.old'
 [ "$(page 10.0.0.1 "$good" sub/ | sed -n 's|^<tr><td><a href="\([^"]*\)">.*|\1|p' | tr '\n' ' ')" = '../ zdir/ a%26b.txt a.txt a.txt.old B.txt ' ] ||
     fail "web listing is not sorted directories first, then case-insensitively"
+page 10.0.0.1 "$good" sub/ | grep -qxF '<p>1 folder, 4 files, 4B</p>' || fail "web listing summary is wrong"
+page 10.0.0.1 "$good" sub/zdir/ | grep -qxF '<p>Empty folder</p>' || fail "web listing does not say a folder is empty"
+page 10.0.0.1 "$good" sub/zdir/ |
+    grep -qF '<h1><a href="../../" tabindex="-1">Index of /</a><a href="../" tabindex="-1">sub/</a><a href="./" tabindex="-1">zdir/</a></h1>' ||
+    fail "web listing breadcrumbs are wrong"
+headers 10.0.0.1 "$good" '' | grep -q "^Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'" ||
+    fail "web listing CSP blocks its style"
 headers 10.0.0.1 "$good" '' | grep -q '^Cache-Control: no-store' || fail "web listing may be cached"
 headers 10.0.0.1 "$good" web.txt | grep -q '^Cache-Control: private, no-cache' || fail "web file is not revalidated"
 etag=$(headers 10.0.0.1 "$good" web.txt | sed -n 's/^ETag: *//p' | tr -d '\r')
