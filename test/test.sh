@@ -161,9 +161,10 @@ page() {
 method() {
     on web "printf '$1 /web.txt HTTP/1.0\\r\\nX-Forwarded-For: $2\\r\\nAuthorization: Basic $(basic "$3")\\r\\nContent-Length: 1\\r\\n\\r\\nx' | nc -w 2 127.0.0.1 8080" | head -1
 }
-# headers <ip> <user:password> <path>: response headers of a raw GET, as busybox wget follows redirects.
+# headers <ip> <user:password> <path> [extra header lines, each ending in \r\n]: response headers of a raw GET,
+# as busybox wget follows redirects.
 headers() {
-    on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(basic "$2")\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
+    on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(basic "$2")\\r\\n${4-}\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
 }
 webup='/entrypoint.sh check'
 
@@ -186,6 +187,17 @@ page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lost web.txt n
 [ "$(code 10.0.0.1 "$good" rootlink/)" = 404 ] || fail "web listed a symlinked directory"
 page 10.0.0.1 "$good" '' | grep -qE '>(link|rootlink/|\.hidden)<' && fail "web listing shows a symlink or a dotfile"
 page 10.0.0.1 "$good" sub/ | grep -qF '<a href="a%26b.txt">a&amp;b.txt</a>' || fail "web listing does not escape names"
+as laptop cubby 'mkdir /shared/sub/zdir; touch /shared/sub/B.txt /shared/sub/a.txt /shared/sub/a.txt.old'
+[ "$(page 10.0.0.1 "$good" sub/ | sed -n 's|^<tr><td><a href="\([^"]*\)">.*|\1|p' | tr '\n' ' ')" = '../ zdir/ a%26b.txt a.txt a.txt.old B.txt ' ] ||
+    fail "web listing is not sorted directories first, then case-insensitively"
+headers 10.0.0.1 "$good" '' | grep -q '^Cache-Control: no-store' || fail "web listing may be cached"
+headers 10.0.0.1 "$good" web.txt | grep -q '^Cache-Control: private, no-cache' || fail "web file is not revalidated"
+etag=$(headers 10.0.0.1 "$good" web.txt | sed -n 's/^ETag: *//p' | tr -d '\r')
+[ -n "$etag" ] || fail "web file has no ETag"
+headers 10.0.0.1 "$good" web.txt "If-None-Match: $etag\\r\\n" | grep -q '^HTTP/[0-9.]* 304' ||
+    fail "web file does not revalidate to a 304"
+headers 10.0.0.1 "$good" '' 'Accept-Encoding: gzip\r\nVia: 1.1 proxy\r\n' | grep -q '^Content-Encoding: gzip' ||
+    fail "web listing is not gzipped through a proxy"
 [ "$(page 10.0.0.1 "$good" 'sub/a%26b.txt?download=1')" = amp ] || fail "web download link differs"
 headers 10.0.0.1 "$good" sub | grep -q '^Location: /sub/' || fail "web directory redirect is not relative"
 headers 10.0.0.1 "$good" 'web.txt?download=1' | grep -q '^Content-Disposition: attachment' || fail "web ?download does not save"

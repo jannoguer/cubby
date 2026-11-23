@@ -44,35 +44,34 @@ function render(r) {
         }
     }
 
-    const dirs = [];
-    const files = [];
+    // Sorted without a comparator, which is much faster in njs: '0' puts directories first, the key is
+    // case-insensitive, and NUL sorts lowest and cannot occur in a name, so the real name follows it.
+    const keys = [];
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         if (e.name.startsWith('.') || !(e.isDirectory() || e.isFile())) {
             continue;
         }
+        keys.push((e.isDirectory() ? '0' : '1') + e.name.toLowerCase() + '\0' + e.name);
+    }
+    keys.sort();
+
+    const title = escape('Index of ' + r.uri);
+    // An array join: appending to one string takes seconds in njs at 200k rows.
+    const rows = parts.length ? ['<tr><td><a href="../">../</a></td><td></td><td></td><td></td></tr>\n'] : [];
+    for (const key of keys) {
+        const name = key.slice(key.indexOf('\0') + 1);
         let stat;
         try {
-            stat = fs.lstatSync(dir + '/' + e.name);
+            stat = fs.lstatSync(dir + '/' + name);
         } catch {
             // A name that is not valid UTF-8 comes back lossy and cannot be looked up; skip it, not the page.
             continue;
         }
-        (e.isDirectory() ? dirs : files).push({ name: e.name, size: stat.size, mtime: stat.mtimeMs });
-    }
-    const byName = (a, b) => a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
-    dirs.sort(byName);
-    files.sort(byName);
-
-    const title = escape('Index of ' + r.uri);
-    let rows = parts.length ? '<tr><td><a href="../">../</a></td><td></td><td></td><td></td></tr>\n' : '';
-    for (const d of dirs) {
-        const href = encodeURIComponent(d.name) + '/';
-        rows += `<tr><td><a href="${href}">${escape(d.name)}/</a></td><td align="center" nowrap>${date(d.mtime)}</td><td align="center">-</td><td></td></tr>\n`;
-    }
-    for (const f of files) {
-        const href = encodeURIComponent(f.name);
-        rows += `<tr><td><a href="${href}">${escape(f.name)}</a></td><td align="center" nowrap>${date(f.mtime)}</td>`
-            + `<td align="center" nowrap>${size(f.size)}</td><td align="center"><a href="${href}?download=1">download</a></td></tr>\n`;
+        const href = encodeURIComponent(name);
+        rows.push(key[0] === '0'
+            ? `<tr><td><a href="${href}/">${escape(name)}/</a></td><td align="center" nowrap>${date(stat.mtimeMs)}</td><td align="center">-</td><td></td></tr>\n`
+            : `<tr><td><a href="${href}">${escape(name)}</a></td><td align="center" nowrap>${date(stat.mtimeMs)}</td>`
+                + `<td align="center" nowrap>${size(stat.size)}</td><td align="center"><a href="${href}?download=1">download</a></td></tr>\n`);
     }
     r.headersOut['Content-Type'] = 'text/html; charset=utf-8';
     r.return(200, `<!DOCTYPE html>
@@ -80,7 +79,7 @@ function render(r) {
 <body leftmargin="24"><h1>${title}</h1>
 <table width="100%" cellpadding="4">
 <tr><th align="left">Name</th><th width="165" nowrap>Last modified (UTC)</th><th width="75">Size</th><th width="90"></th></tr>
-${rows}</table>
+${rows.join('')}</table>
 </body></html>
 `);
 }
