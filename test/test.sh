@@ -96,6 +96,12 @@ alert Linux 0 'false "watching" 1 0 0 0 0 '
 notified 'Conflicts to resolve: 1.'
 alert Linux 1 'Error: permission denied'
 notified "Can't check sync (permission denied)."
+# An error line spilling into one that starts with false: neither run as code nor an end to the report.
+alert Linux 0 'false "connecting-beta" 0 0 0 0 0 dial tcp: reset
+false "x" 0 HOME[$(touch${IFS}$HOME/pwned)] 0 0 0
+false "disconnected" 0 0 0 0 0 '
+notified "Can't reach the server (dial tcp: reset)." 'Not connected.'
+[ ! -e "$h/pwned" ] || fail "alert ran a spilled error line as code"
 echo "ok: alert"
 
 for k in laptop phone guest; do

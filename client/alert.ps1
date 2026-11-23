@@ -17,11 +17,11 @@ function Get-Problems {
         if ($err.EndsWith('(is the daemon running?)')) { return "Mutagen isn't running." }
         return "Can't check sync ($($err -replace '^Error: '))."
     }
-    # The error comes last as it has spaces; any lines it spills onto are
-    # skipped as they do not start with false.
+    # The error comes last as it has spaces. A line it spills onto can start
+    # with false too, so it is skipped unless five counts follow the status.
     foreach ($line in $out) {
         $paused, $status, $conflicts, $a1, $a2, $b1, $b2, $err = "$line" -split ' '
-        if ($paused -ne 'false') { continue }
+        if ($paused -ne 'false' -or "$conflicts $a1 $a2 $b1 $b2" -notmatch '^[0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+$') { continue }
         $err = "$err".Trim()
         $n = [int]$a1 + [int]$a2 + [int]$b1 + [int]$b2
         $msg = switch ($status.Trim('"')) {

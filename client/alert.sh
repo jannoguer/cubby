@@ -23,9 +23,13 @@ problems() {
         esac
         return
     fi
-    # The error comes last as it has spaces; lines it spills onto do not start with false.
+    # The error comes last as it has spaces. A line it spills onto can start with false too, so the counts
+    # are checked: bash evaluates a non-number in $(( )) as code, dash aborts the loop on it.
     printf '%s\n' "$out" | while read -r paused status conflicts a1 a2 b1 b2 err; do
         [ "$paused" = false ] || continue
+        for c in "$conflicts" "$a1" "$a2" "$b1" "$b2"; do
+            case "$c" in ''|*[!0-9]*) continue 2 ;; esac
+        done
         status=${status#\"}
         status=${status%\"}
         msg=
