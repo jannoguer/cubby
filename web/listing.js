@@ -1,9 +1,12 @@
-// js_content handler for directory URIs: an "Index of" page without symlinks or dotfiles.
+// js_content handler for directory URIs: an "Index of" page without symlinks, and without dotfiles unless ?hidden=1.
 import fs from 'fs';
 
 const ROOT = '/shared';
-// Breadcrumb links keep the plain heading look. Columns after the name are styled by position, so rows carry no attributes.
-const STYLE = ':root{color-scheme:light dark}body{margin:8px 24px}h1 a{color:inherit;text-decoration:none}'
+// Breadcrumb and hidden files toggle links keep the plain text look.
+// Columns after the name are styled by position, so rows carry no attributes.
+// A long name wraps anywhere, even without spaces, so it cannot push the other columns off the screen.
+const STYLE = ':root{color-scheme:light dark}body{margin:8px 24px}h1 a,p a{color:inherit;text-decoration:none}'
+    + 'h1,td:first-child{overflow-wrap:anywhere}'
     + 'table{width:100%}th,td{padding:4px}th{position:sticky;top:0;background:Canvas}th:first-child{text-align:left}'
     + 'th,td:nth-child(n+2){white-space:nowrap}td:nth-child(n+2){text-align:center}'
     + '@media (max-width:600px){th:nth-child(2),td:nth-child(2){display:none}}';
@@ -33,8 +36,8 @@ function plural(n, word) {
 
 // "Index of /a/b/" as links "Index of /", "a/", "b/", so every slash belongs to a link and the root is easy to hit.
 // Relative, so any proxy prefix works. Out of the Tab order: keyboard users go up with the ../ row.
-function crumbs(parts) {
-    const link = (up, text) => `<a href="${'../'.repeat(up) || './'}" tabindex="-1">${text}</a>`;
+function crumbs(parts, query) {
+    const link = (up, text) => `<a href="${('../'.repeat(up) || './') + query}" tabindex="-1">${text}</a>`;
     return link(parts.length, 'Index of /') + parts.map((p, i) => link(parts.length - 1 - i, escape(p) + '/')).join('');
 }
 
@@ -60,11 +63,15 @@ function render(r) {
         }
     }
 
+    // Showing hidden files is a choice per visit, kept in the URL: every folder link passes it on.
+    const hidden = r.args.hidden === '1';
+    const query = hidden ? '?hidden=1' : '';
+
     // Sorted without a comparator, which is much faster in njs: '0' puts directories first, the key is
     // case-insensitive, and NUL sorts lowest and cannot occur in a name, so the real name follows it.
     const keys = [];
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (e.name.startsWith('.') || !(e.isDirectory() || e.isFile())) {
+        if ((!hidden && e.name.startsWith('.')) || !(e.isDirectory() || e.isFile())) {
             continue;
         }
         keys.push((e.isDirectory() ? '0' : '1') + e.name.toLowerCase() + '\0' + e.name);
@@ -73,10 +80,9 @@ function render(r) {
 
     const title = escape('Index of ' + r.uri);
     // An array join: appending to one string takes seconds in njs at 200k rows.
-    const rows = parts.length ? ['<tr><td><a href="../">../</a></td><td></td><td></td><td></td></tr>\n'] : [];
+    const rows = parts.length ? [`<tr><td><a href="../${query}">../</a></td><td></td><td></td><td></td></tr>\n`] : [];
     let dirs = 0;
     let files = 0;
-    let bytes = 0;
     for (const key of keys) {
         const name = key.slice(key.indexOf('\0') + 1);
         let stat;
@@ -89,24 +95,24 @@ function render(r) {
         const href = encodeURIComponent(name);
         if (key[0] === '0') {
             dirs++;
-            rows.push(`<tr><td><a href="${href}/">${escape(name)}/</a></td><td>${date(stat.mtimeMs)}</td><td>-</td><td></td></tr>\n`);
+            rows.push(`<tr><td><a href="${href}/${query}">${escape(name)}/</a></td><td>${date(stat.mtimeMs)}</td><td>-</td><td></td></tr>\n`);
         } else {
             files++;
-            bytes += stat.size;
             rows.push(`<tr><td><a href="${href}">${escape(name)}</a></td><td>${date(stat.mtimeMs)}</td>`
                 + `<td>${size(stat.size)}</td><td><a href="${href}?download=1">download</a></td></tr>\n`);
         }
     }
-    const summary = dirs + files ? `${plural(dirs, 'folder')}, ${plural(files, 'file')}, ${size(bytes)}` : 'Empty folder';
+    const summary = dirs + files ? `${plural(dirs, 'folder')}, ${plural(files, 'file')}` : 'Empty folder';
+    const toggle = hidden ? '<a href="./">Hide hidden files</a>' : '<a href="?hidden=1">Show hidden files</a>';
     r.headersOut['Content-Type'] = 'text/html; charset=utf-8';
     r.return(200, `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title>
 <style>${STYLE}</style></head>
-<body><h1>${crumbs(parts)}</h1>
+<body><h1>${crumbs(parts, query)}</h1>
 <table>
 <tr><th>Name</th><th width="165">Last modified (UTC)</th><th width="75">Size</th><th width="90"></th></tr>
 ${rows.join('')}</table>
-<p>${summary}</p>
+<p>${summary} &middot; ${toggle}</p>
 </body></html>
 `);
 }

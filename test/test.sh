@@ -185,14 +185,26 @@ page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lost web.txt n
 [ "$(code 10.0.0.1 "$good" rootlink/)" = 404 ] || fail "web listed a symlinked directory"
 page 10.0.0.1 "$good" '' | grep -qE '>(link|rootlink/|\.hidden)<' && fail "web listing shows a symlink or a dotfile"
 page 10.0.0.1 "$good" sub/ | grep -qF '<a href="a%26b.txt">a&amp;b.txt</a>' || fail "web listing does not escape names"
-as laptop cubby 'mkdir /shared/sub/zdir; touch /shared/sub/B.txt /shared/sub/a.txt /shared/sub/a.txt.old'
-[ "$(page 10.0.0.1 "$good" sub/ | sed -n 's|^<tr><td><a href="\([^"]*\)">.*|\1|p' | tr '\n' ' ')" = '../ zdir/ a%26b.txt a.txt a.txt.old B.txt ' ] ||
+as laptop cubby 'mkdir /shared/sub/zdir /shared/sub/.github; touch /shared/sub/B.txt /shared/sub/a.txt /shared/sub/a.txt.old'
+# hrefs <path>: the link of each listing row, in order.
+hrefs() { page 10.0.0.1 "$good" "$1" | sed -n 's|^<tr><td><a href="\([^"]*\)">.*|\1|p' | tr '\n' ' '; }
+[ "$(hrefs sub/)" = '../ zdir/ a%26b.txt a.txt a.txt.old B.txt ' ] ||
     fail "web listing is not sorted directories first, then case-insensitively"
-page 10.0.0.1 "$good" sub/ | grep -qxF '<p>1 folder, 4 files, 4B</p>' || fail "web listing summary is wrong"
-page 10.0.0.1 "$good" sub/zdir/ | grep -qxF '<p>Empty folder</p>' || fail "web listing does not say a folder is empty"
+page 10.0.0.1 "$good" sub/ | grep -qxF '<p>1 folder, 4 files &middot; <a href="?hidden=1">Show hidden files</a></p>' ||
+    fail "web listing summary is wrong"
+page 10.0.0.1 "$good" sub/zdir/ | grep -qF '<p>Empty folder &middot;' || fail "web listing does not say a folder is empty"
 page 10.0.0.1 "$good" sub/zdir/ |
     grep -qF '<h1><a href="../../" tabindex="-1">Index of /</a><a href="../" tabindex="-1">sub/</a><a href="./" tabindex="-1">zdir/</a></h1>' ||
     fail "web listing breadcrumbs are wrong"
+# Show hidden files: dotfiles listed, symlinks still not, and every folder link keeps the choice.
+page 10.0.0.1 "$good" '?hidden=1' | grep -qF '<a href=".hidden">.hidden</a>' || fail "web Show hidden files lacks a dotfile"
+page 10.0.0.1 "$good" '?hidden=1' | grep -qE '>(link|rootlink/)<' && fail "web Show hidden files shows a symlink"
+[ "$(hrefs 'sub/?hidden=1')" = '../?hidden=1 .github/?hidden=1 zdir/?hidden=1 a%26b.txt a.txt a.txt.old B.txt ' ] ||
+    fail "web Show hidden files lacks a dot folder or drops the choice from folder links"
+page 10.0.0.1 "$good" 'sub/?hidden=1' | grep -qxF '<p>2 folders, 4 files &middot; <a href="./">Hide hidden files</a></p>' ||
+    fail "web Show hidden files has no way back"
+page 10.0.0.1 "$good" 'sub/zdir/?hidden=1' | grep -qF '<h1><a href="../../?hidden=1" tabindex="-1">Index of /</a><a href="../?hidden=1"' ||
+    fail "web Show hidden files drops the choice from the breadcrumbs"
 headers 10.0.0.1 "$good" '' | grep -q "^Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'" ||
     fail "web listing CSP blocks its style"
 headers 10.0.0.1 "$good" '' | grep -q '^Cache-Control: no-store' || fail "web listing may be cached"

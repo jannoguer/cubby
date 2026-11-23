@@ -313,7 +313,7 @@ Without `ssh-keygen`, make an Ed25519 key pair in the browser at [sshkeygen.dev]
 
 ## Web
 
-Read `/shared` from any browser, no key or install: a plain read-only "Index of /" with a `download` link per file (symlinks, dotfiles and names that are not valid UTF-8 are not listed), behind a password. Off by default.
+Read `/shared` from any browser, no key or install: a plain read-only "Index of /" with a `download` link per file (symlinks and names that are not valid UTF-8 are not listed, dotfiles only after **Show hidden files**), behind a password. Off by default. The password reads everything in `/shared`, dotfiles included; keep secrets in a [private folder](#private-folders), which the web view never sees.
 
 Uncomment `COMPOSE_PROFILES=web` and `CUBBY_WEB_PASSWORD` in `.env`, then `docker compose up --build -d`. Log in with the browser's sign-in box: any username, that password. An empty `CUBBY_WEB_PASSWORD=` means no login; left unset, the web container refuses to start. Requests are capped at 10 per second per IP.
 
