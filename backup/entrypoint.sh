@@ -41,7 +41,7 @@ snapshots() {
 }
 
 case "$INTERVAL$KEEP" in
-    *[!0-9]*|'') die "CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be whole numbers, got '$INTERVAL' and '$KEEP'." ;;
+    *[!0-9]*) die "CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be whole numbers, got '$INTERVAL' and '$KEEP'." ;;
 esac
 [ "$INTERVAL" -ge 1 ] && [ "$KEEP" -ge 1 ] || die "CUBBY_BACKUP_INTERVAL and CUBBY_BACKUP_KEEP must be at least 1."
 
