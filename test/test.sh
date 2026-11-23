@@ -170,7 +170,7 @@ webup='/entrypoint.sh check'
 
 retry 30 on web "$webup" || fail "web does not answer"
 on web "printf 'GET / HTTP/1.0\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | grep -q '^WWW-Authenticate: Basic' || fail "web 401 lacks WWW-Authenticate"
-as laptop cubby 'echo web-ok > /shared/web.txt; ln -s /etc/passwd /shared/link; ln -s / /shared/rootlink
+as laptop cubby 'echo web-ok > /shared/web.txt; touch /shared/notes.md; ln -s /etc/passwd /shared/link; ln -s / /shared/rootlink
     touch /shared/.hidden; mkdir /shared/sub; echo amp > "/shared/sub/a&b.txt"'
 good=a:$CUBBY_WEB_PASSWORD
 [ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web refused the password"
@@ -196,6 +196,8 @@ etag=$(headers 10.0.0.1 "$good" web.txt | sed -n 's/^ETag: *//p' | tr -d '\r')
 [ -n "$etag" ] || fail "web file has no ETag"
 headers 10.0.0.1 "$good" web.txt "If-None-Match: $etag\\r\\n" | grep -q '^HTTP/[0-9.]* 304' ||
     fail "web file does not revalidate to a 304"
+headers 10.0.0.1 "$good" web.txt | grep -q '^Content-Type: text/plain; charset=utf-8' || fail "web text is not UTF-8"
+headers 10.0.0.1 "$good" notes.md | grep -q '^Content-Type: text/plain; charset=utf-8' || fail "web .md does not open as text"
 headers 10.0.0.1 "$good" '' 'Accept-Encoding: gzip\r\nVia: 1.1 proxy\r\n' | grep -q '^Content-Encoding: gzip' ||
     fail "web listing is not gzipped through a proxy"
 [ "$(page 10.0.0.1 "$good" 'sub/a%26b.txt?download=1')" = amp ] || fail "web download link differs"
@@ -215,7 +217,7 @@ CUBBY_WEB_PASSWORD= dc up -d web
 retry 30 on web "$webup" || fail "web does not answer without a password"
 [ "$(on web 'wget -q -O - http://127.0.0.1:8080/web.txt')" = web-ok ] || fail "web asked for a login with an empty password"
 on web "$hc" || fail "web healthcheck fails without a password"
-as laptop cubby 'rm -r /shared/web.txt /shared/link /shared/rootlink /shared/.hidden /shared/sub'
+as laptop cubby 'rm -r /shared/web.txt /shared/notes.md /shared/link /shared/rootlink /shared/.hidden /shared/sub'
 
 dc up -d web
 retry 30 on web "$webup" || fail "web does not answer after a restart"
