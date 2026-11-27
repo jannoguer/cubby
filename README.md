@@ -244,7 +244,7 @@ docker compose up -d
 docker compose logs server | grep 'Host key fingerprint'
 ```
 
-Then on every client: `ssh-keygen -R '[<server-ip>]:2222'`, with your `CUBBY_PORT` if you set one.
+Then on every client: `ssh-keygen -R '[<server-ip>]:2222'`, with your `CUBBY_PORT` if you set one, and `ssh cubby true` to accept the new key after comparing its fingerprint with the log. Mutagen cannot answer that prompt, so it stays disconnected until you do.
 
 ## Private folders
 
