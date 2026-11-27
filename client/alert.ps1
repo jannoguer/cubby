@@ -53,6 +53,9 @@ if (-not $p) {
 }
 if ((Test-Path $state) -and (Get-Content -Raw $state).Trim() -eq $p) { exit 0 }
 
+# A failed toast exits 1 before the state file, so the next run retries. Not set earlier: under Stop,
+# the 2>&1 above turns a stopped daemon's stderr into a terminating error.
+$ErrorActionPreference = 'Stop'
 # Loads the WinRT assembly; the bare type names below resolve only after it.
 $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
