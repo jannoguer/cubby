@@ -75,7 +75,7 @@ while :; do
         set -- "$@" --link-dest="$DST/latest"
     fi
     if [ -e "$DST/$ts" ]; then
-        echo "[$ts] snapshot already exists; skipping this run" >&2
+        echo "[$ts] WARNING: snapshot already exists; skipping this run" >&2
     elif [ "$unchanged" = 1 ]; then
         touch -h "$DST/latest" # for the healthcheck
         report "no changes; snapshot skipped"
