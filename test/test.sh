@@ -99,24 +99,27 @@ as laptop laptop 'rm /private/laptop/up.txt'
 echo "ok: scp"
 
 # Web: requests run inside cubbytest-web with busybox wget; X-Forwarded-For stands in for the client IP.
+# client: a new client IP per request, so the checks never add up to one client's rate limit, however fast they run.
+echo 0 > "$tmp/client"
+client() { n=$(($(cat "$tmp/client") + 1)); echo "$n" > "$tmp/client"; echo "10.0.$((n / 256)).$((n % 256))"; }
 # basic <user:password>: the Basic auth token.
 basic() { printf '%s' "$1" | base64 | tr -d '\n'; }
-# code <ip> <user:password> <path>: HTTP status. page <ip> <user:password> <path>: body.
+# code <user:password> <path>: HTTP status. page <user:password> <path>: body.
 code() {
-    on web "wget -S -q -O /dev/null --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(basic "$2")' 'http://127.0.0.1:8080/$3' 2>&1" |
+    on web "wget -S -q -O /dev/null --header 'X-Forwarded-For: $(client)' --header 'Authorization: Basic $(basic "$1")' 'http://127.0.0.1:8080/$2' 2>&1" |
         sed -n 's|^ *HTTP/[0-9.]* \([0-9]*\).*|\1|p' | tail -1
 }
 page() {
-    on web "wget -q -O - --header 'X-Forwarded-For: $1' --header 'Authorization: Basic $(basic "$2")' 'http://127.0.0.1:8080/$3'"
+    on web "wget -q -O - --header 'X-Forwarded-For: $(client)' --header 'Authorization: Basic $(basic "$1")' 'http://127.0.0.1:8080/$2'"
 }
-# method <verb> <ip> <user:password>: status line of a raw request, as busybox wget cannot send PUT.
+# method <verb> <user:password>: status line of a raw request, as busybox wget cannot send PUT.
 method() {
-    on web "printf '$1 /web.txt HTTP/1.0\\r\\nX-Forwarded-For: $2\\r\\nAuthorization: Basic $(basic "$3")\\r\\nContent-Length: 1\\r\\n\\r\\nx' | nc -w 2 127.0.0.1 8080" | head -1
+    on web "printf '$1 /web.txt HTTP/1.0\\r\\nX-Forwarded-For: $(client)\\r\\nAuthorization: Basic $(basic "$2")\\r\\nContent-Length: 1\\r\\n\\r\\nx' | nc -w 2 127.0.0.1 8080" | head -1
 }
-# headers <ip> <user:password> <path> [extra header lines, each ending in \r\n]: response headers of a raw GET,
+# headers <user:password> <path> [extra header lines, each ending in \r\n]: response headers of a raw GET,
 # as busybox wget follows redirects.
 headers() {
-    on web "printf 'GET /$3 HTTP/1.0\\r\\nX-Forwarded-For: $1\\r\\nAuthorization: Basic $(basic "$2")\\r\\n${4-}\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
+    on web "printf 'GET /$2 HTTP/1.0\\r\\nX-Forwarded-For: $(client)\\r\\nAuthorization: Basic $(basic "$1")\\r\\n${3-}\\r\\n' | nc -w 2 127.0.0.1 8080" | sed '/^\r*$/q'
 }
 # The web healthcheck as compose runs it.
 hc=$(docker inspect --format '{{range slice .Config.Healthcheck.Test 1}}{{.}} {{end}}' cubbytest-web)
@@ -126,63 +129,63 @@ on web "printf 'GET / HTTP/1.0\\r\\n\\r\\n' | nc -w 2 127.0.0.1 8080" | grep -q 
 as laptop cubby 'echo web-ok > /shared/web.txt; touch /shared/notes.md; ln -s /etc/passwd /shared/link; ln -s / /shared/rootlink
     touch /shared/.hidden; mkdir /shared/sub; echo amp > "/shared/sub/a&b.txt"'
 good=a:$CUBBY_WEB_PASSWORD
-[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web refused the password"
-[ "$(code 10.0.0.1 ":$CUBBY_WEB_PASSWORD" '')" = 200 ] || fail "web refused an empty username"
-[ "$(code 10.0.0.1 "a:pass:w0rd" '')" = 401 ] || fail "web accepted the password in another case"
-[ "$(code 10.0.0.1 "a:Pass" '')" = 401 ] || fail "web accepted part of the password"
-[ "$(code 10.0.0.1 "a:" '')" = 401 ] || fail "web accepted an empty password"
-page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lacks web.txt"
-[ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web download differs"
-[ "$(code 10.0.0.1 "a:Pass" web.txt)" = 401 ] || fail "web served a file with a wrong password"
+[ "$(code "$good" '')" = 200 ] || fail "web refused the password"
+[ "$(code ":$CUBBY_WEB_PASSWORD" '')" = 200 ] || fail "web refused an empty username"
+[ "$(code "a:pass:w0rd" '')" = 401 ] || fail "web accepted the password in another case"
+[ "$(code "a:Pass" '')" = 401 ] || fail "web accepted part of the password"
+[ "$(code "a:" '')" = 401 ] || fail "web accepted an empty password"
+page "$good" '' | grep -q 'web.txt' || fail "web listing lacks web.txt"
+[ "$(page "$good" web.txt)" = web-ok ] || fail "web download differs"
+[ "$(code "a:Pass" web.txt)" = 401 ] || fail "web served a file with a wrong password"
 as laptop cubby 'touch "/shared/bad$(printf "\377")"'
-[ "$(code 10.0.0.1 "$good" '')" = 200 ] || fail "web listing fails on a name that is not UTF-8"
-page 10.0.0.1 "$good" '' | grep -q 'web.txt' || fail "web listing lost web.txt next to a name that is not UTF-8"
-[ "$(code 10.0.0.1 "$good" link)" = 403 ] || fail "web served a symlink"
-[ "$(code 10.0.0.1 "$good" rootlink/)" = 404 ] || fail "web listed a symlinked directory"
-page 10.0.0.1 "$good" '' | grep -qE '>(link|rootlink/|\.hidden)<' && fail "web listing shows a symlink or a dotfile"
-page 10.0.0.1 "$good" sub/ | grep -qF '<a href="a%26b.txt">a&amp;b.txt</a>' || fail "web listing does not escape names"
+[ "$(code "$good" '')" = 200 ] || fail "web listing fails on a name that is not UTF-8"
+page "$good" '' | grep -q 'web.txt' || fail "web listing lost web.txt next to a name that is not UTF-8"
+[ "$(code "$good" link)" = 403 ] || fail "web served a symlink"
+[ "$(code "$good" rootlink/)" = 404 ] || fail "web listed a symlinked directory"
+page "$good" '' | grep -qE '>(link|rootlink/|\.hidden)<' && fail "web listing shows a symlink or a dotfile"
+page "$good" sub/ | grep -qF '<a href="a%26b.txt">a&amp;b.txt</a>' || fail "web listing does not escape names"
 as laptop cubby 'mkdir /shared/sub/zdir /shared/sub/.github; touch /shared/sub/B.txt /shared/sub/a.txt /shared/sub/a.txt.old'
 # hrefs <path>: the link of each listing row, in order.
-hrefs() { page 10.0.0.1 "$good" "$1" | sed -n 's|^<tr><td><a href="\([^"]*\)">.*|\1|p' | tr '\n' ' '; }
+hrefs() { page "$good" "$1" | sed -n 's|^<tr><td><a href="\([^"]*\)">.*|\1|p' | tr '\n' ' '; }
 [ "$(hrefs sub/)" = '../ zdir/ a%26b.txt a.txt a.txt.old B.txt ' ] ||
     fail "web listing is not sorted directories first, then case-insensitively"
-page 10.0.0.1 "$good" sub/ | grep -qxF '<p>1 folder, 4 files &middot; <a href="?hidden=1">Show hidden files</a></p>' ||
+page "$good" sub/ | grep -qxF '<p>1 folder, 4 files &middot; <a href="?hidden=1">Show hidden files</a></p>' ||
     fail "web listing summary is wrong"
-page 10.0.0.1 "$good" sub/zdir/ | grep -qF '<p>Empty folder &middot;' || fail "web listing does not say a folder is empty"
-page 10.0.0.1 "$good" sub/zdir/ |
+page "$good" sub/zdir/ | grep -qF '<p>Empty folder &middot;' || fail "web listing does not say a folder is empty"
+page "$good" sub/zdir/ |
     grep -qF '<h1><a href="../../" tabindex="-1">Index of /</a><a href="../" tabindex="-1">sub/</a><a href="./" tabindex="-1">zdir/</a></h1>' ||
     fail "web listing breadcrumbs are wrong"
 # Show hidden files: dotfiles listed, symlinks still not, and every folder link keeps the choice.
-page 10.0.0.1 "$good" '?hidden=1' | grep -qF '<a href=".hidden">.hidden</a>' || fail "web Show hidden files lacks a dotfile"
-page 10.0.0.1 "$good" '?hidden=1' | grep -qE '>(link|rootlink/)<' && fail "web Show hidden files shows a symlink"
+page "$good" '?hidden=1' | grep -qF '<a href=".hidden">.hidden</a>' || fail "web Show hidden files lacks a dotfile"
+page "$good" '?hidden=1' | grep -qE '>(link|rootlink/)<' && fail "web Show hidden files shows a symlink"
 [ "$(hrefs 'sub/?hidden=1')" = '../?hidden=1 .github/?hidden=1 zdir/?hidden=1 a%26b.txt a.txt a.txt.old B.txt ' ] ||
     fail "web Show hidden files lacks a dot folder or drops the choice from folder links"
-page 10.0.0.1 "$good" 'sub/?hidden=1' | grep -qxF '<p>2 folders, 4 files &middot; <a href="./">Hide hidden files</a></p>' ||
+page "$good" 'sub/?hidden=1' | grep -qxF '<p>2 folders, 4 files &middot; <a href="./">Hide hidden files</a></p>' ||
     fail "web Show hidden files has no way back"
-page 10.0.0.1 "$good" 'sub/zdir/?hidden=1' | grep -qF '<h1><a href="../../?hidden=1" tabindex="-1">Index of /</a><a href="../?hidden=1"' ||
+page "$good" 'sub/zdir/?hidden=1' | grep -qF '<h1><a href="../../?hidden=1" tabindex="-1">Index of /</a><a href="../?hidden=1"' ||
     fail "web Show hidden files drops the choice from the breadcrumbs"
-headers 10.0.0.1 "$good" '' | grep -q "^Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'" ||
+headers "$good" '' | grep -q "^Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'" ||
     fail "web listing CSP blocks its style"
-headers 10.0.0.1 "$good" '' | grep -q '^Cache-Control: no-store' || fail "web listing may be cached"
-headers 10.0.0.1 "$good" web.txt | grep -q '^Cache-Control: private, no-cache' || fail "web file is not revalidated"
-etag=$(headers 10.0.0.1 "$good" web.txt | sed -n 's/^ETag: *//p' | tr -d '\r')
+headers "$good" '' | grep -q '^Cache-Control: no-store' || fail "web listing may be cached"
+headers "$good" web.txt | grep -q '^Cache-Control: private, no-cache' || fail "web file is not revalidated"
+etag=$(headers "$good" web.txt | sed -n 's/^ETag: *//p' | tr -d '\r')
 [ -n "$etag" ] || fail "web file has no ETag"
-headers 10.0.0.1 "$good" web.txt "If-None-Match: $etag\\r\\n" | grep -q '^HTTP/[0-9.]* 304' ||
+headers "$good" web.txt "If-None-Match: $etag\\r\\n" | grep -q '^HTTP/[0-9.]* 304' ||
     fail "web file does not revalidate to a 304"
-headers 10.0.0.1 "$good" web.txt | grep -q '^Content-Type: text/plain; charset=utf-8' || fail "web text is not UTF-8"
-headers 10.0.0.1 "$good" notes.md | grep -q '^Content-Type: text/plain; charset=utf-8' || fail "web .md does not open as text"
-headers 10.0.0.1 "$good" '' 'Accept-Encoding: gzip\r\nVia: 1.1 proxy\r\n' | grep -q '^Content-Encoding: gzip' ||
+headers "$good" web.txt | grep -q '^Content-Type: text/plain; charset=utf-8' || fail "web text is not UTF-8"
+headers "$good" notes.md | grep -q '^Content-Type: text/plain; charset=utf-8' || fail "web .md does not open as text"
+headers "$good" '' 'Accept-Encoding: gzip\r\nVia: 1.1 proxy\r\n' | grep -q '^Content-Encoding: gzip' ||
     fail "web listing is not gzipped through a proxy"
-[ "$(page 10.0.0.1 "$good" 'sub/a%26b.txt?download=1')" = amp ] || fail "web download link differs"
-headers 10.0.0.1 "$good" sub | grep -q '^Location: /sub/' || fail "web directory redirect is not relative"
-headers 10.0.0.1 "$good" 'web.txt?download=1' | grep -q '^Content-Disposition: attachment' || fail "web ?download does not save"
-headers 10.0.0.1 "$good" web.txt | grep -q '^Content-Disposition' && fail "web file opens as a download"
-headers 10.0.0.1 "$good" web.txt | grep -q '^Content-Security-Policy: sandbox' || fail "web file is not sandboxed"
-headers 10.0.0.1 "$good" '' | grep -q '^Content-Security-Policy: sandbox' && fail "web listing is sandboxed, which blocks downloads"
+[ "$(page "$good" 'sub/a%26b.txt?download=1')" = amp ] || fail "web download link differs"
+headers "$good" sub | grep -q '^Location: /sub/' || fail "web directory redirect is not relative"
+headers "$good" 'web.txt?download=1' | grep -q '^Content-Disposition: attachment' || fail "web ?download does not save"
+headers "$good" web.txt | grep -q '^Content-Disposition' && fail "web file opens as a download"
+headers "$good" web.txt | grep -q '^Content-Security-Policy: sandbox' || fail "web file is not sandboxed"
+headers "$good" '' | grep -q '^Content-Security-Policy: sandbox' && fail "web listing is sandboxed, which blocks downloads"
 for verb in PUT DELETE; do
-    case $(method $verb 10.0.0.1 "$good") in *' 403 '*) ;; *) fail "web did not refuse $verb" ;; esac
+    case $(method $verb "$good") in *' 403 '*) ;; *) fail "web did not refuse $verb" ;; esac
 done
-[ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web file changed or vanished"
+[ "$(page "$good" web.txt)" = web-ok ] || fail "web file changed or vanished"
 dc logs --no-log-prefix web 2>&1 | grep -qF "$CUBBY_WEB_PASSWORD" && fail "web log holds the password"
 
 CUBBY_WEB_PASSWORD='' dc up -d web
