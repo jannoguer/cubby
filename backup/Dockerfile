@@ -1,7 +1,6 @@
 FROM alpine:3.24
 
-RUN apk add --no-cache rsync \
-    && adduser -D -H -u 1000 -s /sbin/nologin cubby
+RUN apk add --no-cache rsync
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh
