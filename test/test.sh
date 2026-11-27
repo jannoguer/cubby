@@ -186,6 +186,12 @@ for verb in PUT DELETE; do
     case $(method $verb "$good") in *' 403 '*) ;; *) fail "web did not refuse $verb" ;; esac
 done
 [ "$(page "$good" web.txt)" = web-ok ] || fail "web file changed or vanished"
+# Rate limit: a burst of guesses from one client gets 503s, and the next client still gets in. One exec,
+# so the burst outruns the 10r/s refill on any machine.
+burst=$(on web "for i in \$(seq 30); do wget -q -O /dev/null --header 'X-Forwarded-For: 192.0.2.1' http://127.0.0.1:8080/ 2>&1; done
+    wget -q -O /dev/null --header 'X-Forwarded-For: 192.0.2.2' --header 'Authorization: Basic $(basic "$good")' http://127.0.0.1:8080/ 2>&1") ||
+    fail "web rate-limited every client together"
+echo "$burst" | grep -q ' 503 ' || fail "web does not rate-limit a client"
 dc logs --no-log-prefix web 2>&1 | grep -qF "$CUBBY_WEB_PASSWORD" && fail "web log holds the password"
 
 CUBBY_WEB_PASSWORD='' dc up -d web
