@@ -1,5 +1,5 @@
 #!/bin/sh
-# Smoke test: checks client/alert.sh against stubs, then builds the images and checks login,
+# Smoke test: runs test/client.sh, then builds the images and checks login, scp,
 # private folders, snapshots, pruning, the restore lock, restores, folder removal, startup guards, backup failures,
 # the healthchecks and the web view.
 # Needs docker, ssh and ssh-keygen. Run: sh test/test.sh
@@ -22,7 +22,7 @@ trap cleanup EXIT
 
 fail() {
     echo "FAIL: $1" >&2
-    dc logs --tail 40 >&2
+    dc logs --timestamps --tail 80 >&2
     exit 1
 }
 # retry <seconds> <command...>: poll until the command succeeds.
@@ -46,63 +46,7 @@ on() { docker exec "cubbytest-$1" sh -c "$2"; }
 # seed <volume> <script>: run a script as root with the volume at /v, before the stack starts.
 seed() { docker run --rm -i -u 0 -v "cubbytest_$1:/v" cubbytest-backup sh -c "$2"; }
 
-a=$(grep -o "'{{range .}}.*{{end}}'" client/alert.sh)
-b=$(grep -o "'{{range .}}.*{{end}}'" client/alert.ps1)
-[ "$a" = "$b" ] || fail "alert.sh and alert.ps1 use different templates"
-
-# alert.sh puts $HOME/.local/bin first on PATH, so stubs there stand in for the real commands.
-h=$tmp/home
-mkdir -p "$h/.local/bin"
-printf '#!/bin/sh\necho "$STUB_UNAME"\n' > "$h/.local/bin/uname"
-printf '#!/bin/sh\nprintf "%%s\\n" "$STUB_OUT"\nexit "$STUB_RC"\n' > "$h/.local/bin/mutagen"
-printf '#!/bin/sh\n' > "$h/.local/bin/sleep"
-for c in busctl osascript; do
-    printf '#!/bin/sh\nprintf "%%s\\n" "${0##*/}" "$@" > "$HOME/notified"\n[ ! -e "$HOME/notify-fails" ]\n' > "$h/.local/bin/$c"
-done
-chmod +x "$h/.local/bin/"*
-# alert <uname> <mutagen exit code> <mutagen output>: run alert.sh; $h/notified holds what it sent.
-alert() {
-    rm -f "$h/notified"
-    HOME=$h XDG_STATE_HOME=$h/state STUB_UNAME=$1 STUB_RC=$2 STUB_OUT=$3 sh client/alert.sh
-}
-# notified <line...>: the last run sent a notification with these lines.
-notified() {
-    for l in "$@"; do
-        grep -qxF -- "$l" "$h/notified" 2> /dev/null || fail "alert did not send: $l"
-    done
-}
-down='Error: unable to connect to daemon: connection refused (is the daemon running?)'
-
-alert Linux 0 'false "watching" 0 0 0 0 0
-true "disconnected" 0 0 0 0 0 '
-[ ! -e "$h/notified" ] || fail "alert on a healthy or paused session"
-alert Linux 0 'false "connecting-beta" 0 0 0 0 0 dial tcp: i/o timeout
-false "watching" 2 1 0 0 3 '
-notified busctl Notify "Can't reach the server (dial tcp: i/o timeout)." 'Conflicts to resolve: 2. Files that could not sync: 4.'
-alert Linux 0 'false "watching" 2 1 0 0 3 '
-notified 'Conflicts to resolve: 2. Files that could not sync: 4.'
-alert Linux 0 'false "watching" 2 1 0 0 3 '
-[ ! -e "$h/notified" ] || fail "alert repeated an unchanged report"
-alert Linux 0 ''
-[ ! -e "$h/state/cubby/alert" ] || fail "alert kept its state after recovery"
-touch "$h/notify-fails"
-alert Darwin 1 "$down" && fail "alert succeeded although the notification failed"
-rm "$h/notify-fails"
-alert Darwin 1 "$down"
-notified osascript "Mutagen isn't running."
-alert Linux 0 'false "halted-on-root-deletion" 0 0 0 0 0 '
-notified 'Stopped, the folder was deleted on one side.'
-alert Linux 0 'false "watching" 1 0 0 0 0 '
-notified 'Conflicts to resolve: 1.'
-alert Linux 1 'Error: permission denied'
-notified "Can't check sync (permission denied)."
-# An error line spilling into one that starts with false: neither run as code nor an end to the report.
-alert Linux 0 'false "connecting-beta" 0 0 0 0 0 dial tcp: reset
-false "x" 0 HOME[$(touch${IFS}$HOME/pwned)] 0 0 0
-false "disconnected" 0 0 0 0 0 '
-notified "Can't reach the server (dial tcp: reset)." 'Not connected.'
-[ ! -e "$h/pwned" ] || fail "alert ran a spilled error line as code"
-echo "ok: alert"
+sh test/client.sh
 
 for k in laptop phone guest; do
     ssh-keygen -q -t ed25519 -N "" -f "$tmp/$k"
@@ -141,6 +85,18 @@ as laptop root true 2> /dev/null && fail "a client key logged in as root"
 as laptop Upper true 2> /dev/null && fail "a key logged in as a name that is not a user"
 as laptop cubby 'cat /private/laptop/n.txt' 2> /dev/null && fail "the shared user read a private folder"
 echo "ok: login and private folders"
+
+# scp over SFTP, as the README's SFTP section and Mutagen's agent install use it: the image has no sftp-server
+# package, so this fails if sshd stops serving its internal one.
+copy() { scp -q -F "$tmp/config" -i "$tmp/laptop" "$@"; }
+echo sftp > "$tmp/up.txt"
+copy "$tmp/up.txt" cubby@cubbytest:/shared/up.txt || fail "scp cannot push to /shared"
+copy cubby@cubbytest:/shared/up.txt "$tmp/down.txt" || fail "scp cannot pull from /shared"
+[ "$(cat "$tmp/down.txt")" = sftp ] || fail "scp pulled another file than it pushed"
+copy "$tmp/up.txt" laptop@cubbytest:/private/laptop/up.txt || fail "scp cannot push to a private folder"
+as laptop cubby 'rm /shared/up.txt'
+as laptop laptop 'rm /private/laptop/up.txt'
+echo "ok: scp"
 
 # Web: requests run inside cubbytest-web with busybox wget; X-Forwarded-For stands in for the client IP.
 # basic <user:password>: the Basic auth token.
@@ -229,14 +185,14 @@ done
 [ "$(page 10.0.0.1 "$good" web.txt)" = web-ok ] || fail "web file changed or vanished"
 dc logs --no-log-prefix web 2>&1 | grep -qF "$CUBBY_WEB_PASSWORD" && fail "web log holds the password"
 
-CUBBY_WEB_PASSWORD= dc up -d web
+CUBBY_WEB_PASSWORD='' dc up -d web
 retry 30 on web "$hc" || fail "web healthcheck fails without a password"
 [ "$(on web 'wget -q -O - http://127.0.0.1:8080/web.txt')" = web-ok ] || fail "web asked for a login with an empty password"
 as laptop cubby 'rm -r /shared/web.txt /shared/notes.md /shared/link /shared/rootlink /shared/.hidden /shared/sub'
 
 dc up -d web
 retry 30 on web "$hc" || fail "web healthcheck fails after a restart"
-COMPOSE_PROFILES= docker compose -f docker-compose.yml config --services | grep -qx web && fail "web is part of the default stack"
+COMPOSE_PROFILES='' docker compose -f docker-compose.yml config --services | grep -qx web && fail "web is part of the default stack"
 echo "ok: web"
 
 as laptop cubby 'echo one > /shared/a.txt'
@@ -272,7 +228,8 @@ held() {
     first=$(on "$svc" 'ls -d /backups/2*Z | head -1')
     for i in 1 2 3 4; do
         prev=$(on "$svc" 'readlink /backups/latest')
-        as laptop "$user" "echo $i > $file"
+        # Growing content: rsync skips a same-size rewrite made in the same second as the last snapshot.
+        as laptop "$user" "seq $i > $file"
         retry 20 on "$svc" "[ \"\$(readlink /backups/latest)\" != $prev ]" || fail "$svc: no snapshot while the lock was held"
         if [ "$i" = 2 ]; then
             on "$svc" '/entrypoint.sh check' || fail "$svc: healthcheck fails on a short postponement"
