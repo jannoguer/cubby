@@ -1,0 +1,43 @@
+name: ci
+
+# On every push and PR, and monthly: a runner is a fresh machine, so each run rebuilds the images from today's
+# Alpine, OpenSSH, rsync and nginx, and the client jobs install the newest Mutagen, so a break shows without a change here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 5 9 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: sh test/test.sh
+
+  # alert.sh on what the newest Mutagen really prints.
+  client:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo mkdir -p /usr/local/bin && sudo sh .github/install-mutagen.sh /usr/local/bin
+      - run: sh test/client.sh mutagen
+
+  client-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File .github\install-mutagen.ps1 -Dir "$env:LOCALAPPDATA\Programs\mutagen"
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File test\client.ps1
