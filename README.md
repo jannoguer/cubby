@@ -1,8 +1,8 @@
 # Cubby
 
-Self-hosted file sync. One Alpine container runs a key-only sshd, every computer runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, phones copy over [SFTP](#sftp), any browser can read the files through an opt-in [web view](#web), and two more containers keep hardlinked snapshots where no client key can reach them.
+[![CI](https://img.shields.io/github/actions/workflow/status/jannoguer/cubby/ci.yml?branch=main&label=CI)](https://github.com/jannoguer/cubby/actions/workflows/ci.yml?query=branch%3Amain) [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#client) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE.md)
 
-[![CI](https://img.shields.io/github/actions/workflow/status/jannoguer/cubby/ci.yml?branch=main&label=CI)](https://github.com/jannoguer/cubby/actions/workflows/ci.yml?query=branch%3Amain)
+Self-hosted file sync. One Alpine container runs a key-only sshd, every computer runs [Mutagen](https://mutagen.io) (tested with v0.18.1) against it, phones copy over [SFTP](#sftp), any browser can read the files through an opt-in [web view](#web), and two more containers keep hardlinked snapshots where no client key can reach them.
 
 **Why:** The best part of Dropbox is forgetting it exists. Files land on the laptop and the desktop, and you stop thinking about it. I wanted that feeling without relying on Dropbox, or watching it add features nobody asked for every quarter.
 
